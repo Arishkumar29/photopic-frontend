@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+@theme {
+  --color-gwc-purple: #6e2b8b;
+  --color-gwc-coral: #da7756;
+}
+
+:root {
+  --color-gwc-purple: #6e2b8b;
+  --color-gwc-coral: #da7756;
+  --color-bg-cutout: #ffffff;
+}
+
+.dark {
+  --color-bg-cutout: #18181b;
+}
+
+.bg-gwc-purple {
+  background-color: #6e2b8b;
+}
+
+.text-gwc-purple {
+  color: #6e2b8b;
+}
+
+.border-gwc-purple {
+  border-color: #6e2b8b;
+}
+
+.bg-gwc-coral {
+  background-color: #da7756;
+}
+
+.text-gwc-coral {
+  color: #da7756;
+}
+
+.border-gwc-coral {
+  border-color: #da7756;
+}
+
+.bg-gwc-gradient {
+  background: linear-gradient(135deg, #6e2b8b 0%, #da7756 100%);
+}
+
+.text-gwc-gradient {
+  background: linear-gradient(135deg, #6e2b8b 0%, #da7756 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.btn-gwc {
+  background: linear-gradient(135deg, #6e2b8b 0%, #da7756 100%);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 8px 20px -4px rgba(110, 43, 139, 0.35);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-gwc:hover {
+  opacity: 0.94;
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px -4px rgba(110, 43, 139, 0.45);
+}
+
+.btn-gwc:disabled {
+  opacity: 0.6;
+  transform: none;
+  box-shadow: none;
+}
+
+.grid-bg-subtle {
+  background-image: 
+    linear-gradient(to right, rgba(110, 43, 139, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(110, 43, 139, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.grid-bg-accent {
+  background-image: 
+    linear-gradient(to right, rgba(218, 119, 86, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(218, 119, 86, 0.05) 1px, transparent 1px);
+  background-size: 120px 120px;
+}
+
+.grid-bg-mask-top {
+  -webkit-mask-image: radial-gradient(circle 800px at 50% -200px, black 30%, transparent 80%);
+  mask-image: radial-gradient(circle 800px at 50% -200px, black 30%, transparent 80%);
+}
+
+.grid-bg-mask-bottom {
+  -webkit-mask-image: radial-gradient(circle 1000px at 50% 120%, black 20%, transparent 80%);
+  mask-image: radial-gradient(circle 1000px at 50% 120%, black 20%, transparent 80%);
+}
+
+/* Custom dark mode variant */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Custom premium hover animations */
+@keyframes shine-sweep {
+  0% {
+    left: -100%;
+  }
+  100% {
+    left: 200%;
+  }
+}
+
+.hover-shine {
+  position: relative;
+  overflow: hidden;
+}
+
+.hover-shine::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -150%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: skewX(-25deg);
+  pointer-events: none;
+  transition: none;
+}
+
+.hover-shine:hover::after {
+  animation: shine-sweep 0.85s ease-in-out;
+}
