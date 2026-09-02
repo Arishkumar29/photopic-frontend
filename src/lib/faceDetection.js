@@ -58,3 +58,46 @@ export async function extractDescriptor(imageInput) {
     return null;
   }
 }
+
+/**
+ * Extract a tightly cropped, centered 112x112 face canvas from an image element.
+ * Ensures the SFace neural network on Vercel receives an aligned face without room background.
+ */
+export async function extractCroppedFace(imageInput) {
+  try {
+    await loadModels();
+    const faceapi = await import('@vladmandic/face-api');
+
+    let detection = await faceapi
+      .detectSingleFace(imageInput, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.3 }))
+      .withFaceLandmarks();
+
+    if (!detection) {
+      detection = await faceapi
+        .detectSingleFace(imageInput, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }))
+        .withFaceLandmarks();
+    }
+
+    if (!detection) return null;
+
+    const box = detection.detection.box;
+    const pad = Math.max(box.width, box.height) * 0.25;
+
+    const cropX = Math.max(0, box.x - pad);
+    const cropY = Math.max(0, box.y - pad);
+    const cropW = Math.min(imageInput.width - cropX, box.width + pad * 2);
+    const cropH = Math.min(imageInput.height - cropY, box.height + pad * 2);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 112;
+    canvas.height = 112;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(imageInput, cropX, cropY, cropW, cropH, 0, 0, 112, 112);
+
+    return canvas.toDataURL('image/jpeg', 0.95);
+  } catch (err) {
+    console.warn('[faceDetection] extractCroppedFace error:', err);
+    return null;
+  }
+}
+
