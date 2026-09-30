@@ -1,6 +1,10 @@
 // Central API helper connecting Frontend to Backend
-const DEFAULT_PROD_API = 'https://photopic-backend-git-main-arishkumars-projects.vercel.app';
-const BASE = (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? DEFAULT_PROD_API : '')).replace(/\/+$/, '');
+// Backend origin, e.g. https://photopic-backend.onrender.com (set VITE_API_URL at build time).
+// Empty in development: Vite proxies /api to localhost:3000.
+const BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+if (import.meta.env.PROD && !BASE) {
+  console.error('VITE_API_URL is not set: API calls will go to this site instead of the PhotoPic backend.');
+}
 
 /**
  * Resolves media / image URLs so relative paths like /bulk_photo or /api/drive-proxy

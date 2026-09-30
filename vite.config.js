@@ -15,7 +15,6 @@ export default defineConfig({
           vendor: ['react', 'react-dom'],
           ui: ['lucide-react', 'motion'],
           zip: ['jszip'],
-          faceapi: ['@vladmandic/face-api'],
         },
       },
     },
@@ -29,7 +28,6 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': 'http://localhost:3000',
-      '/bulk_photo': 'http://localhost:3000',
     },
   },
 });
