@@ -1,270 +1,224 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Calendar, Folder, Copy, CheckCircle, ExternalLink, SlidersHorizontal, Image as ImageIcon, Camera, ChevronDown, Check, ChevronLeft, Lock } from 'lucide-react';
+import { Search, ChevronDown, Check, ArrowUpRight, Image as ImageIcon, MapPin } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { apiFetch } from '../lib/api';
-import { useAuth } from '../context/AuthContext';
 
-export function MyEvents({ onSelectEvent, onBack, onOpenAdminAuth }) {
-  const { user } = useAuth();
-  const [events, setEvents] = useState([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [sortBy, setSortBy] = useState('Newest');
-  const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
-  const [copiedId, setCopiedId] = useState(null);
-  const sortRef = useRef(null);
+const SORTS = [
+  { value: 'Newest', label: 'Newest first' },
+  { value: 'Oldest', label: 'Oldest first' },
+  { value: 'Name', label: 'A to Z' },
+];
 
-  useEffect(() => { 
-    fetchEvents(); 
-  }, []);
+function formatDate(event) {
+  const raw = event.eventDate || event.createdAt;
+  if (!raw) return '';
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
-  // Close sort dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (sortRef.current && !sortRef.current.contains(e.target)) {
-        setSortDropdownOpen(false);
-      }
-    };
-    if (sortDropdownOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [sortDropdownOpen]);
+const photoCount = (e) => e.indexStatus?.total || e.driveFiles?.length || e.photos?.length || 0;
 
-  const fetchEvents = async () => {
-    try {
-      const res = await apiFetch('/api/events');
-      const data = await res.json();
-      if (data.events) setEvents(data.events);
-    } catch (e) { 
-      console.error(e); 
-    }
+// Real index state from the server, phrased for guests.
+function StatusPill({ status, onDark }) {
+  const state = status?.state;
+  const map = {
+    ready: ['Ready to search', 'bg-sage'],
+    partial: ['Ready to search', 'bg-sage'],
+    indexing: ['Adding photos', 'bg-amber animate-pulse'],
+    pending: ['Opening soon', 'bg-ink-3'],
   };
-
-  const copyLink = (link, id) => {
-    navigator.clipboard.writeText(link);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  const formatDate = (dateStr) => {
-    try {
-      const d = dateStr ? new Date(dateStr) : new Date();
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    } catch { 
-      return 'Jun 15, 2026'; 
-    }
-  };
-
-  const filteredEvents = events
-    .filter(e => {
-      const q = searchTerm.toLowerCase();
-      return e.eventName.toLowerCase().includes(q) || (e.orgName || '').toLowerCase().includes(q);
-    })
-    .sort((a, b) => {
-      if (sortBy === 'Newest') return b.eventId.localeCompare(a.eventId);
-      if (sortBy === 'Oldest') return a.eventId.localeCompare(b.eventId);
-      if (sortBy === 'Name') return a.eventName.localeCompare(b.eventName);
-      return 0;
-    });
-
-  const sortOptions = [
-    { value: 'Newest', label: 'Newest first' },
-    { value: 'Oldest', label: 'Oldest first' },
-    { value: 'Name', label: 'By name (A–Z)' }
-  ];
-
-  const currentSortLabel = sortOptions.find(o => o.value === sortBy)?.label || 'Newest first';
-
+  const [label, dot] = map[state] || map.pending;
   return (
-    <motion.div
+    <span className={`inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.14em] ${onDark ? 'text-white/90' : 'text-ink-2'}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} /> {label}
+    </span>
+  );
+}
+
+function Cover({ event, className }) {
+  return event.coverImage ? (
+    <img src={event.coverImage} alt="" className={`w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04] ${className || ''}`} />
+  ) : (
+    <div className="w-full h-full flex items-center justify-center bg-paper-2"><ImageIcon className="w-8 h-8 text-ink-3" /></div>
+  );
+}
+
+function CoverStory({ event, onOpen }) {
+  return (
+    <motion.button
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ type: 'spring', bounce: 0.2 }}
-      className="space-y-8 text-left font-sans text-slate-900 dark:text-zinc-50"
+      onClick={() => onOpen(event)}
+      className="group w-full text-left grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-10 items-center"
     >
-      {/* ─── PAGE HEADER ─────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-[#6e2b8b] dark:text-[#da7756] mb-2">
-            Event Galleries
-          </p>
-          <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-[1.05]">
-            My <span className="font-serif italic text-transparent bg-clip-text bg-gradient-to-r from-[#6e2b8b] to-[#da7756]">Events.</span>
-          </h1>
-          <p className="text-slate-500 dark:text-zinc-400 text-sm font-medium mt-1">
-            Select an event to launch the selfie finder and browse photos.
-          </p>
+      <div className="lg:col-span-7 relative aspect-[16/10] overflow-hidden rounded-sm bg-paper-2">
+        <Cover event={event} />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent" />
+        <div className="absolute bottom-4 left-4"><StatusPill status={event.indexStatus} onDark /></div>
+      </div>
+      <div className="lg:col-span-5 space-y-4">
+        <p className="eyebrow text-coral">Cover story</p>
+        <h2 className="display text-4xl sm:text-5xl lg:text-6xl font-medium leading-[1.02]">
+          <span className="ink-underline">{event.eventName}</span>
+        </h2>
+        <p className="text-ink-2">
+          by <span className="font-semibold text-ink">{event.orgName || 'Organizer'}</span>
+          {formatDate(event) && <> · {formatDate(event)}</>}
+        </p>
+        {event.eventLocation && <p className="text-sm text-ink-3 flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5" /> {event.eventLocation}</p>}
+        {event.description && <p className="text-ink-2 leading-relaxed line-clamp-3">{event.description}</p>}
+        <div className="flex items-center gap-5 pt-2">
+          <span className="btn-plum px-6 py-3">Find my photos <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" /></span>
+          <span className="text-sm text-ink-3 tabular-nums">{photoCount(event).toLocaleString()} photos</span>
         </div>
       </div>
+    </motion.button>
+  );
+}
 
-      {/* ─── TOOLBAR: SEARCH + SORT + TABS ───────────────────────── */}
-      <div className="space-y-4 relative z-30">
-        <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
-          {/* Search */}
-          <div className="relative flex-1 max-w-md group">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-zinc-500 group-focus-within:text-[#6e2b8b] transition-colors" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-white dark:bg-zinc-900/60 border border-slate-200 dark:border-zinc-800 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#6e2b8b] font-medium text-sm text-slate-900 dark:text-zinc-50 placeholder:text-slate-400 dark:placeholder:text-zinc-600 transition-colors shadow-sm"
-              placeholder="Search event galleries…"
-            />
-          </div>
-
-          {/* Custom Sort Dropdown */}
-          <div className="relative shrink-0 z-40" ref={sortRef}>
-            <button
-              onClick={() => setSortDropdownOpen(prev => !prev)}
-              className="flex items-center gap-2.5 px-4 py-3 bg-white dark:bg-zinc-900/60 hover:bg-slate-50 dark:hover:bg-zinc-800/80 border border-slate-200 dark:border-zinc-800 rounded-2xl text-sm font-semibold text-slate-800 dark:text-zinc-100 shadow-sm transition-all cursor-pointer select-none"
-              aria-expanded={sortDropdownOpen}
-            >
-              <SlidersHorizontal className="w-4 h-4 text-[#6e2b8b] dark:text-[#da7756]" />
-              <span>{currentSortLabel}</span>
-              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 dark:text-zinc-500 transition-transform duration-200 ${sortDropdownOpen ? 'rotate-180' : ''}`} />
-            </button>
-
-            <AnimatePresence>
-              {sortDropdownOpen && (
-                <motion.div
-                  initial={{ opacity: 0, y: 6, scale: 0.96 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 4, scale: 0.96 }}
-                  transition={{ type: 'spring', bounce: 0.15, duration: 0.2 }}
-                  className="absolute right-0 mt-2 w-52 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl shadow-2xl p-1.5 z-50 space-y-0.5"
-                >
-                  {sortOptions.map(option => {
-                    const isSelected = sortBy === option.value;
-                    return (
-                      <button
-                        key={option.value}
-                        onClick={() => {
-                          setSortBy(option.value);
-                          setSortDropdownOpen(false);
-                        }}
-                        className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                          isSelected
-                            ? 'bg-purple-50 dark:bg-purple-950/40 text-[#6e2b8b] dark:text-[#da7756]'
-                            : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800/60'
-                        }`}
-                      >
-                        <span>{option.label}</span>
-                        {isSelected && <Check className="w-3.5 h-3.5 text-[#6e2b8b] dark:text-[#da7756]" />}
-                      </button>
-                    );
-                  })}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+function EventCard({ event, index, onOpen }) {
+  return (
+    <motion.button
+      layout
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.97 }}
+      transition={{ type: 'spring', bounce: 0.15, delay: Math.min(index, 8) * 0.05 }}
+      onClick={() => onOpen(event)}
+      className="group text-left"
+    >
+      <div className="relative aspect-[4/3] overflow-hidden rounded-sm bg-paper-2">
+        <Cover event={event} />
+        <div className="absolute inset-0 bg-ink/0 group-hover:bg-ink/45 transition-colors duration-300 flex items-end p-4">
+          <span className="text-white font-bold text-sm flex items-center gap-1 translate-y-3 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all duration-300">
+            Find my photos <ArrowUpRight className="w-4 h-4" />
+          </span>
         </div>
       </div>
+      <div className="pt-4 space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <StatusPill status={event.indexStatus} />
+          <span className="text-xs text-ink-3 tabular-nums">{photoCount(event).toLocaleString()} photos</span>
+        </div>
+        <h3 className="display text-2xl font-medium leading-tight"><span className="ink-underline">{event.eventName}</span></h3>
+        <p className="text-sm text-ink-3">by {event.orgName || 'Organizer'}{formatDate(event) && ` · ${formatDate(event)}`}</p>
+      </div>
+    </motion.button>
+  );
+}
 
-      {/* ─── EVENT GRID ──────────────────────────────────────────── */}
-      <AnimatePresence mode="popLayout">
-        {filteredEvents.length === 0 ? (
-          <motion.div
-            key="empty"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ type: 'spring', bounce: 0.2 }}
-            className="bg-white dark:bg-zinc-900/40 border border-slate-100 dark:border-zinc-800/60 rounded-[2.5rem] p-16 text-center max-w-lg mx-auto shadow-sm"
-          >
-            <div className="w-16 h-16 bg-purple-50 dark:bg-purple-950/40 rounded-2xl flex items-center justify-center mx-auto mb-6">
-              <Folder className="w-7 h-7 text-[#6e2b8b] dark:text-[#da7756]" />
-            </div>
-            <h3 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-zinc-50 mb-2">
-              No galleries found
-            </h3>
-            <p className="text-slate-500 dark:text-zinc-400 font-medium text-sm leading-relaxed">
-              {searchTerm ? `No results for "${searchTerm}"` : 'No event galleries available yet.'}
-            </p>
-          </motion.div>
-        ) : (
-          <motion.div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {filteredEvents.map((e, i) => {
-              return (
-                <motion.div
-                  layout
-                  key={e.eventId}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ type: 'spring', bounce: 0.2, delay: i * 0.05 }}
-                  className="group bg-white dark:bg-zinc-900/40 border border-slate-100 dark:border-zinc-800/60 rounded-[2rem] overflow-hidden flex flex-col hover:shadow-xl hover:-translate-y-1 transition-all duration-300 shadow-sm"
-                >
-                  {/* Cover image */}
-                  <div 
-                    onClick={() => onSelectEvent(e)}
-                    className="relative h-44 bg-slate-100 dark:bg-zinc-800 overflow-hidden cursor-pointer"
+export function MyEvents({ onSelectEvent }) {
+  const [events, setEvents] = useState(null);
+  const [failed, setFailed] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState('Newest');
+  const [sortOpen, setSortOpen] = useState(false);
+  const sortRef = useRef(null);
+
+  useEffect(() => {
+    apiFetch('/api/events')
+      .then((res) => res.json())
+      .then((data) => setEvents(data.events || []))
+      .catch(() => { setFailed(true); setEvents([]); });
+  }, []);
+
+  useEffect(() => {
+    if (!sortOpen) return;
+    const close = (e) => { if (!sortRef.current?.contains(e.target)) setSortOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [sortOpen]);
+
+  const q = searchTerm.trim().toLowerCase();
+  const filtered = (events || [])
+    .filter((e) => !q || (e.eventName || '').toLowerCase().includes(q) || (e.orgName || '').toLowerCase().includes(q))
+    .sort((a, b) => {
+      const da = a.createdAt || a.eventId;
+      const db = b.createdAt || b.eventId;
+      if (sortBy === 'Newest') return db.localeCompare(da);
+      if (sortBy === 'Oldest') return da.localeCompare(db);
+      return (a.eventName || '').localeCompare(b.eventName || '');
+    });
+
+  const [featured, ...rest] = filtered;
+  const showFeatured = featured && !q;
+  const grid = showFeatured ? rest : filtered;
+
+  return (
+    <div className="space-y-12">
+      {/* toolbar */}
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between border-y border-line py-3">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-0 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-3" />
+          <input
+            type="search"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search events or organizers"
+            aria-label="Search events"
+            className="w-full bg-transparent pl-7 pr-2 py-2 text-[15px] placeholder:text-ink-3 focus:outline-none"
+          />
+        </div>
+        <div className="relative" ref={sortRef}>
+          <button onClick={() => setSortOpen((v) => !v)} aria-expanded={sortOpen} className="btn-quiet">
+            Sort: <span className="text-ink">{SORTS.find((s) => s.value === sortBy)?.label}</span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${sortOpen ? 'rotate-180' : ''}`} />
+          </button>
+          <AnimatePresence>
+            {sortOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                className="absolute right-0 mt-2 w-48 card shadow-xl p-1.5 z-50"
+              >
+                {SORTS.map((o) => (
+                  <button
+                    key={o.value}
+                    onClick={() => { setSortBy(o.value); setSortOpen(false); }}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm ${sortBy === o.value ? 'bg-plum-soft text-plum font-semibold' : 'hover:bg-paper-2'}`}
                   >
-                    {e.coverImage ? (
-                      <img
-                        src={e.coverImage}
-                        alt={e.eventName}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center gap-2">
-                        <ImageIcon className="w-7 h-7 text-slate-400 dark:text-zinc-600" />
-                        <span className="text-xs font-medium text-slate-400 dark:text-zinc-600">Event Gallery</span>
-                      </div>
-                    )}
+                    {o.label} {sortBy === o.value && <Check className="w-4 h-4" />}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
 
-                    {/* Gradient overlay */}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-4">
-                      <span className="text-white text-xs font-semibold flex items-center gap-1.5">
-                        <Camera className="w-3.5 h-3.5 text-[#da7756]" /> Open Selfie Finder
-                      </span>
-                    </div>
-
-                    {/* Live Status badge */}
-                    <span className="absolute top-3 left-3 text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/90 text-white border border-emerald-400/40 backdrop-blur-md shadow-sm flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                      Live
-                    </span>
-
-                    {/* Photo count pill */}
-                    <span className="absolute top-3 right-3 text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-black/40 text-white border border-white/20 backdrop-blur-sm">
-                      {(e.driveFiles?.length || e.photos?.length || 0)} photos
-                    </span>
-                  </div>
-
-                  {/* Card body */}
-                  <div className="p-5 flex-1 flex flex-col justify-between gap-4">
-                    <div>
-                      <h4 
-                        onClick={() => onSelectEvent(e)}
-                        className="text-base font-semibold tracking-tight text-slate-900 dark:text-zinc-50 truncate cursor-pointer hover:text-[#6e2b8b] dark:hover:text-[#da7756] transition-colors"
-                      >
-                        {e.eventName}
-                      </h4>
-                      <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-400 dark:text-zinc-500 font-medium">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-3 h-3" /> {formatDate(e.createdAt)}
-                        </span>
-                        <span>by {e.orgName || 'Organizer'}</span>
-                      </div>
-                    </div>
-
-                    {/* User Action button: Open Selfie Page */}
-                    <div className="pt-3 border-t border-slate-100 dark:border-zinc-800/40">
-                      <button
-                        onClick={() => onSelectEvent(e)}
-                        className="w-full bg-gradient-to-r from-[#6e2b8b] to-[#da7756] hover:opacity-95 text-white font-bold py-3 px-4 rounded-xl transition-all text-xs flex items-center justify-center gap-2 shadow-md shadow-purple-950/20 cursor-pointer"
-                      >
-                        <Camera className="w-3.5 h-3.5" />
-                        <span>Open Selfie Page</span>
-                      </button>
-                    </div>
-                  </div>
-                </motion.div>
-              );
-            })}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+      {events === null ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+          {[0, 1, 2].map((i) => <div key={i} className="aspect-[4/3] bg-paper-2 animate-pulse rounded-sm" />)}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-20 max-w-md mx-auto">
+          <h3 className="display text-3xl font-medium mb-2">{failed ? "Can't reach the server" : 'Nothing here yet'}</h3>
+          <p className="text-ink-2">
+            {failed ? 'Check your connection and refresh the page.'
+              : q ? `No events match "${searchTerm}".` : 'No event galleries are published yet. Use the link or QR code from your host.'}
+          </p>
+        </div>
+      ) : (
+        <>
+          {showFeatured && <CoverStory event={featured} onOpen={onSelectEvent} />}
+          {grid.length > 0 && (
+            <section className="space-y-6">
+              {showFeatured && (
+                <div className="flex items-baseline justify-between border-b border-ink pb-2">
+                  <h2 className="display text-2xl font-medium">More events</h2>
+                  <span className="text-xs text-ink-3">{grid.length} galleries</span>
+                </div>
+              )}
+              <motion.div layout className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-12">
+                <AnimatePresence mode="popLayout">
+                  {grid.map((e, i) => <EventCard key={e.eventId} event={e} index={i} onOpen={onSelectEvent} />)}
+                </AnimatePresence>
+              </motion.div>
+            </section>
+          )}
+        </>
+      )}
+    </div>
   );
 }

@@ -1,364 +1,85 @@
 import { useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { Camera, Download, RefreshCcw, X, ChevronLeft, ChevronRight, Search, Sliders, Undo, Eye, Sparkles, FolderArchive, Loader2, Check } from 'lucide-react';
 import { motion, AnimatePresence, MotionConfig } from 'motion/react';
-import { Logo } from '../components/Logo';
-import { ThemeToggle } from '../components/ThemeToggle';
 import { apiFetch, resolveMediaUrl } from '../lib/api';
 import { downloadPhotosAsZip } from '../lib/zipHelper';
+import { Masthead, OrganizerLink } from '../components/Masthead';
+import { Hero } from './gallery/Hero';
+import { CameraView } from './gallery/CameraView';
+import { ScanView, PreparingView } from './gallery/ScanView';
+import { Results } from './gallery/Results';
+import { Lightbox } from './gallery/Lightbox';
+import { INDEX_POLL_MS, loadImageToCanvas, filterString, DEFAULT_FILTERS, triggerDownload } from './gallery/utils';
 
-// Shared enter/exit for each step of the flow (hero → camera → scanning → results),
-// so AnimatePresence can cross-fade between them instead of hard-swapping.
-const stepMotion = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.22, 1, 0.36, 1] } },
-  exit: { opacity: 0, y: -12, transition: { duration: 0.2, ease: 'easeIn' } },
-};
-
-// Phone selfies can be 12MP+. Face matching is just as accurate at 1280px, and the
-// upload shrinks from several MB to ~200 KB, which is most of the scan time on 4G.
-const MAX_SELFIE_SIDE = 1280;
-const INDEX_POLL_MS = 4000;
-
-function loadImageToCanvas(dataUrl) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, MAX_SELFIE_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(img.naturalWidth * scale);
-      canvas.height = Math.round(img.naturalHeight * scale);
-      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas);
-    };
-    img.onerror = () => reject(new Error('Could not read that image. Please try a different photo.'));
-    img.src = dataUrl;
-  });
+// Restores the selfie + matches saved for this event (only when it was the last one scanned).
+function restoreSaved(eventId, key) {
+  try {
+    if (!eventId || localStorage.getItem('photopic_active_event_id') !== eventId) return null;
+    const savedMatches = localStorage.getItem(`photopic_matched_photos_${eventId}`);
+    const savedSelfie = localStorage.getItem(`photopic_selfie_${eventId}`);
+    if (savedSelfie && savedMatches) {
+      const parsed = JSON.parse(savedMatches);
+      if (Array.isArray(parsed) && parsed.length > 0) return key === 'selfie' ? savedSelfie : parsed;
+    }
+  } catch {}
+  return null;
 }
 
-function scanErrorCopy(type) {
-  if (type === 'no_face') {
-    return {
-      title: "We couldn't see your face 🙈",
-      body: 'Make sure your whole face is in the frame, facing the camera, in good light — then try again.',
-    };
-  }
-  if (type === 'not_found') {
-    return {
-      title: 'This event link has expired',
-      body: "We couldn't find this event. Please double-check your QR code or ask the event host for a new link.",
-    };
-  }
-  if (type === 'rate_limited') {
-    return {
-      title: 'Too many scans at once',
-      body: 'Please wait a minute, then try your selfie again.',
-    };
-  }
-  return {
-    title: 'Something went wrong',
-    body: "We couldn't reach the photo server. Check your connection and try again.",
-  };
-}
-
-// Grid tiles only need ~600px. Load them straight from Google's image CDN instead
-// of streaming 1600px originals through our backend; the lightbox and downloads
-// still use the full-size proxied photo.
-function thumbFor(photoUrl) {
-  const id = photoUrl.split('/api/drive-proxy/')[1]?.split(/[?#/]/)[0];
-  return id ? `https://lh3.googleusercontent.com/d/${id}=w600` : photoUrl;
-}
-
-function PhotoCard({ photoUrl, index, onOpen, onDownload }) {
-  const [loaded, setLoaded] = useState(false);
-  const thumb = thumbFor(photoUrl);
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 24 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: '0px 0px -40px 0px' }}
-      // Cap the stagger so photo #40 doesn't wait seconds to appear.
-      transition={{ duration: 0.45, delay: Math.min(index % 12, 8) * 0.05, ease: [0.22, 1, 0.36, 1] }}
-      className="break-inside-avoid mb-3 sm:mb-6 relative group cursor-pointer"
-      onClick={() => onOpen(index)}
-    >
-      <div className="relative rounded-2xl sm:rounded-[2rem] overflow-hidden bg-slate-100 dark:bg-zinc-800/80 shadow-md group-hover:shadow-2xl group-hover:shadow-purple-950/15 transition-[transform,box-shadow,border-color] duration-300 sm:group-hover:-translate-y-1.5 border border-purple-100/60 dark:border-zinc-800/80 group-hover:border-purple-300 dark:group-hover:border-purple-700/60">
-        {!loaded && <div className="aspect-[4/3] w-full animate-pulse bg-gradient-to-br from-slate-100 to-slate-200 dark:from-zinc-800 dark:to-zinc-700" />}
-        <img
-          src={thumb}
-          alt={`Match ${index + 1}`}
-          className={`w-full h-auto object-cover transition-[opacity,transform] duration-500 group-hover:scale-105 ${loaded ? 'opacity-100' : 'opacity-0 absolute inset-0'}`}
-          loading="lazy"
-          decoding="async"
-          onLoad={() => setLoaded(true)}
-          onError={(e) => {
-            const target = e.currentTarget;
-            // CDN refused (rate limit / blocked): fall back to our backend proxy once.
-            if (target.src === thumb && thumb !== photoUrl) {
-              target.src = `${photoUrl}?w=600`;
-              return;
-            }
-            // Never hide the card — show whatever we have rather than a blank hole
-            setLoaded(true);
-          }}
-        />
-
-        {/* Gradient Scrim for readable badges */}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
-
-        {/* Top Left: Match Badge */}
-        <div className="absolute top-2.5 left-2.5 sm:top-3.5 sm:left-3.5 z-20 pointer-events-none">
-          <span className="bg-gradient-to-r from-[#6e2b8b] to-[#da7756] text-white text-[10px] sm:text-[11px] font-bold px-2.5 sm:px-3 py-1 rounded-full shadow-lg flex items-center gap-1">
-            <Sparkles className="w-3 h-3" />
-            #{index + 1}
-          </span>
-        </div>
-
-        {/* Center Hover Action (pointer devices only) */}
-        <div className="absolute inset-0 hidden sm:flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10 pointer-events-none">
-          <div className="bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md text-slate-900 dark:text-zinc-50 px-4 py-2 rounded-full shadow-xl font-semibold text-xs flex items-center gap-2 border border-white/40">
-            <Eye className="w-4 h-4 text-[#6e2b8b] dark:text-[#da7756]" />
-            <span>Click to View &amp; Edit</span>
-          </div>
-        </div>
-
-        {/* Bottom Right: Quick Download Button */}
-        <div className="absolute bottom-2.5 right-2.5 sm:bottom-3.5 sm:right-3.5 z-20">
-          <button
-            onClick={(e) => { e.stopPropagation(); onDownload(photoUrl); }}
-            className="bg-white/90 dark:bg-zinc-900/90 hover:bg-white dark:hover:bg-zinc-800 text-slate-800 dark:text-zinc-100 p-2.5 rounded-full shadow-lg border border-white/40 dark:border-zinc-700 transition-transform hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer group/btn"
-            title="Download high-res photo"
-            aria-label={`Download photo ${index + 1}`}
-          >
-            <Download className="w-4 h-4 text-[#6e2b8b] dark:text-[#da7756] group-hover/btn:translate-y-0.5 transition-transform" />
-          </button>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-const SCAN_STEPS = [
-  { id: 'prepare', label: 'Preparing selfie' },
-  { id: 'search', label: 'Finding your photos' },
-];
-
-// The server answers in about a second, but upload time depends on the network, so
-// the bar eases toward 92% and only completes when the real answer arrives.
-function useEasedProgress(active, expectedMs = 2500) {
-  const [value, setValue] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    setValue(0);
-    const start = performance.now();
-    let frame;
-    const tick = (now) => {
-      const t = (now - start) / expectedMs;
-      setValue(92 * (1 - Math.exp(-2.2 * t)));
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [active, expectedMs]);
-  return value;
-}
-
-function ScanView({ selfie, stage, photoCount, onCancel }) {
-  const progress = useEasedProgress(true);
-  const stepIndex = SCAN_STEPS.findIndex((s) => s.id === stage);
-  return (
-    <motion.div
-      {...stepMotion}
-      className="max-w-md mx-auto bg-gradient-to-br from-purple-50/90 via-white to-orange-50/60 dark:from-zinc-900 dark:via-zinc-900/90 dark:to-zinc-850 text-slate-900 dark:text-zinc-50 rounded-[2rem] sm:rounded-[2.5rem] p-6 sm:p-10 border border-purple-100 dark:border-zinc-800 shadow-xl relative overflow-hidden text-center space-y-6"
-      role="status"
-      aria-live="polite"
-    >
-      {/* The guest's own selfie under a scanning sweep */}
-      <div className="relative w-44 h-44 sm:w-52 sm:h-52 mx-auto">
-        <motion.div
-          className="absolute -inset-2 rounded-full bg-[conic-gradient(from_0deg,#6e2b8b,#da7756,transparent_70%)]"
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
-        />
-        <div className="absolute inset-0 rounded-full overflow-hidden border-4 border-white dark:border-zinc-900 bg-slate-200 dark:bg-zinc-800">
-          {selfie && <img src={selfie} alt="Your selfie" className="w-full h-full object-cover -scale-x-100" />}
-          <motion.div
-            animate={{ y: ['-10%', '105%', '-10%'] }}
-            transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
-            className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#6e2b8b] via-[#da7756] to-[#6e2b8b] shadow-[0_0_14px_rgba(218,119,86,1)]"
-          />
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <h3 className="text-xl sm:text-2xl font-bold tracking-tight">Finding your photos…</h3>
-        <p className="text-slate-500 dark:text-zinc-400 text-sm max-w-xs mx-auto leading-relaxed">
-          {photoCount > 0
-            ? `Comparing your face with ${photoCount.toLocaleString()} event photos.`
-            : 'Comparing your face with the event photos.'}
-        </p>
-      </div>
-
-      <div className="space-y-3">
-        <div className="h-2 rounded-full bg-slate-200/80 dark:bg-zinc-800 overflow-hidden">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-[#6e2b8b] to-[#da7756] transition-[width] duration-200 ease-out"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <ol className="flex items-center justify-center gap-2 text-[11px] font-bold tracking-wider uppercase">
-          {SCAN_STEPS.map((s, i) => {
-            const done = i < stepIndex;
-            const active = i === stepIndex;
-            return (
-              <li key={s.id} className="flex items-center gap-2">
-                {i > 0 && <span className={`h-px w-5 transition-colors duration-500 ${done || active ? 'bg-[#da7756]' : 'bg-slate-300 dark:bg-zinc-700'}`} />}
-                <span className={`px-3 py-1 rounded-full border inline-flex items-center gap-1 transition-colors duration-500 ${
-                  active
-                    ? 'text-[#6e2b8b] dark:text-[#da7756] bg-purple-50 dark:bg-purple-950/40 border-purple-200/60 dark:border-purple-900/40'
-                    : done
-                      ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200/60 dark:border-emerald-900/40'
-                      : 'text-slate-400 dark:text-zinc-500 border-slate-200 dark:border-zinc-800'
-                }`}>
-                  {done && <Check className="w-3 h-3" />}
-                  {active && <Loader2 className="w-3 h-3 animate-spin" />}
-                  {s.label}
-                </span>
-              </li>
-            );
-          })}
-        </ol>
-      </div>
-
-      <button
-        onClick={onCancel}
-        className="text-sm font-semibold text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors cursor-pointer"
-      >
-        Cancel
-      </button>
-    </motion.div>
-  );
-}
-
-// Shown when the guest scans while the host's photos are still being processed.
-function PreparingView({ selfie, indexing, onCancel }) {
-  const pct = indexing?.total ? Math.round((indexing.done / indexing.total) * 100) : 0;
-  return (
-    <motion.div
-      {...stepMotion}
-      className="max-w-md mx-auto bg-gradient-to-br from-purple-50/90 via-white to-orange-50/60 dark:from-zinc-900 dark:via-zinc-900/90 dark:to-zinc-850 rounded-[2rem] sm:rounded-[2.5rem] p-6 sm:p-10 border border-purple-100 dark:border-zinc-800 shadow-xl text-center space-y-6"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="w-24 h-24 mx-auto rounded-full overflow-hidden border-4 border-[#da7756]/60 shadow-md">
-        {selfie && <img src={selfie} alt="Your selfie" className="w-full h-full object-cover -scale-x-100" />}
-      </div>
-      <div className="space-y-2">
-        <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-zinc-50">Getting the event photos ready</h3>
-        <p className="text-slate-500 dark:text-zinc-400 text-sm leading-relaxed max-w-xs mx-auto">
-          The host just added these photos. Your matches will appear here automatically — keep this page open.
-        </p>
-      </div>
-      <div className="space-y-2">
-        <div className="h-2 rounded-full bg-slate-200/80 dark:bg-zinc-800 overflow-hidden">
-          <motion.div
-            className="h-full rounded-full bg-gradient-to-r from-[#6e2b8b] to-[#da7756]"
-            animate={{ width: `${Math.max(pct, 3)}%` }}
-            transition={{ duration: 0.6, ease: 'easeOut' }}
-          />
-        </div>
-        <p className="text-xs font-semibold text-slate-500 dark:text-zinc-400 tabular-nums">
-          {indexing?.total ? `${indexing.done} of ${indexing.total} photos processed` : 'Starting…'}
-        </p>
-      </div>
-      <button
-        onClick={onCancel}
-        className="text-sm font-semibold text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors cursor-pointer"
-      >
-        Cancel
-      </button>
-    </motion.div>
-  );
+function rememberSelfie(eventId, dataUrl) {
+  try {
+    localStorage.setItem('photopic_active_event_id', eventId);
+    localStorage.setItem(`photopic_selfie_${eventId}`, dataUrl);
+  } catch {}
 }
 
 export function PublicGallery({ eventData, onBack }) {
   const [currentEvent, setCurrentEvent] = useState(eventData);
   const [stream, setStream] = useState(null);
-  
-  const [photo, setPhoto] = useState(() => {
-    try {
-      const activeId = eventData?.eventId;
-      if (activeId && localStorage.getItem('photopic_active_event_id') === activeId) {
-        const savedMatches = localStorage.getItem(`photopic_matched_photos_${activeId}`);
-        const savedSelfie = localStorage.getItem(`photopic_selfie_${activeId}`);
-        if (savedSelfie && savedMatches) {
-          const parsed = JSON.parse(savedMatches);
-          if (Array.isArray(parsed) && parsed.length > 0) return savedSelfie;
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  });
-
+  const [photo, setPhoto] = useState(() => restoreSaved(eventData?.eventId, 'selfie'));
+  const [matchedPhotos, setMatchedPhotos] = useState(() => restoreSaved(eventData?.eventId, 'matches'));
   const [isScanning, setIsScanning] = useState(false);
   const [scanStage, setScanStage] = useState('prepare');
   // Index progress while the event's photos are still being processed on the server.
   const [indexing, setIndexing] = useState(null);
   const scanAbort = useRef(null);
-  const [matchedPhotos, setMatchedPhotos] = useState(() => {
-    try {
-      const activeId = eventData?.eventId;
-      if (activeId && localStorage.getItem('photopic_active_event_id') === activeId) {
-        const savedMatches = localStorage.getItem(`photopic_matched_photos_${activeId}`);
-        const savedSelfie = localStorage.getItem(`photopic_selfie_${activeId}`);
-        if (savedSelfie && savedMatches) {
-          const parsed = JSON.parse(savedMatches);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        }
-      }
-    } catch (e) {}
-    return null;
-  });
   const [scanError, setScanError] = useState(null);
+  // Selfie quality from the server ({score, faces, issues}) for the coach and tips.
+  const [quality, setQuality] = useState(null);
   const [cameraError, setCameraError] = useState(null);
   const [lightboxIndex, setLightboxIndex] = useState(null);
+  // Where the tapped card sits on screen, so the lightbox can zoom out of it.
+  const [lightboxOrigin, setLightboxOrigin] = useState(null);
   const videoRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // Photo editing state variables
   const [isEditing, setIsEditing] = useState(false);
-  const [editFilters, setEditFilters] = useState({
-    brightness: 100,
-    contrast: 100,
-    saturation: 100,
-    sepia: 0,
-    hue: 0
-  });
+  const [editFilters, setEditFilters] = useState(DEFAULT_FILTERS);
   const [activePreset, setActivePreset] = useState('original');
   const [isDownloading, setIsDownloading] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
   const [zipProgress, setZipProgress] = useState(null);
+
+  const eventId = currentEvent?.eventId || eventData?.eventId;
+  const activeEvent = currentEvent || eventData;
 
   const handleDownloadAllZip = async () => {
     if (!matchedPhotos || matchedPhotos.length === 0 || isZipping) return;
     setIsZipping(true);
     setZipProgress({ current: 0, total: matchedPhotos.length });
     try {
-      const eventTitle = currentEvent?.eventName || eventData?.eventName || 'GWC_PhotoSync';
+      const eventTitle = activeEvent?.eventName || 'GWC_PhotoSync';
       const safeName = eventTitle.replace(/[^a-zA-Z0-9_-]/g, '_');
       await downloadPhotosAsZip(matchedPhotos, `${safeName}_matched_photos.zip`, (current, total) => {
         setZipProgress({ current, total });
       });
     } catch (err) {
-      console.error("ZIP download error:", err);
+      console.error('ZIP download error:', err);
     } finally {
       setIsZipping(false);
       setZipProgress(null);
     }
   };
 
-  // Load active event if not supplied in props or when eventData changes
+  // Load full event details (photos, index status) whenever the event changes.
   useEffect(() => {
     if (eventData?.eventId) {
       setCurrentEvent(eventData);
@@ -367,126 +88,71 @@ export function PublicGallery({ eventData, onBack }) {
       setScanError(null);
       setCameraError(null);
 
-      // Fetch fresh, full event details from backend (photos, driveFiles, etc.)
       apiFetch(`/api/events/${eventData.eventId}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.event) {
-            setCurrentEvent(data.event);
-          }
-        })
+        .then((res) => res.json())
+        .then((data) => { if (data.event) setCurrentEvent(data.event); })
         .catch(() => {
           apiFetch('/api/events')
-            .then(res => res.json())
-            .then(data => {
-              const matched = data.events?.find(e => e.eventId === eventData.eventId);
+            .then((res) => res.json())
+            .then((data) => {
+              const matched = data.events?.find((e) => e.eventId === eventData.eventId);
               if (matched) setCurrentEvent(matched);
             })
             .catch(console.error);
         });
 
-      try {
-        const activeId = eventData.eventId;
-        const savedMatches = localStorage.getItem(`photopic_matched_photos_${activeId}`);
-        const savedSelfie = localStorage.getItem(`photopic_selfie_${activeId}`);
-        if (savedSelfie && savedMatches) {
-          const parsed = JSON.parse(savedMatches);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setPhoto(savedSelfie);
-            setMatchedPhotos(parsed);
-            return;
-          }
-        }
-      } catch (e) {}
-      setPhoto(null);
-      setMatchedPhotos(null);
+      setPhoto(restoreSaved(eventData.eventId, 'selfie'));
+      setMatchedPhotos(restoreSaved(eventData.eventId, 'matches'));
     } else {
       apiFetch('/api/events')
-        .then(res => res.json())
-        .then(data => {
-          if (data.events && data.events.length > 0) {
-            setCurrentEvent(data.events[0]);
-          }
-        })
+        .then((res) => res.json())
+        .then((data) => { if (data.events?.length) setCurrentEvent(data.events[0]); })
         .catch(console.error);
     }
-  }, [eventData?.eventId]);
+  }, [eventData?.eventId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto track visits to backend
+  // Count one visit per event opened.
   useEffect(() => {
-    const id = currentEvent?.eventId || eventData?.eventId;
-    if (id) {
-      apiFetch(`/api/events/${id}/track-visit`, { method: 'POST' })
-        .catch(err => console.error("Failed to track visit", err));
-    }
-  }, [currentEvent, eventData]);
+    if (eventId) apiFetch(`/api/events/${eventId}/track-visit`, { method: 'POST' }).catch(() => {});
+  }, [eventId]);
 
-  // CSS Filter string compiler
-  const getFilterString = () => {
-    if (activePreset === 'warm') return 'brightness(105%) contrast(102%) saturate(120%) sepia(20%)';
-    if (activePreset === 'cool') return 'brightness(102%) contrast(105%) saturate(110%) hue-rotate(15deg)';
-    if (activePreset === 'noir') return 'grayscale(100%) contrast(120%)';
-    if (activePreset === 'vintage') return 'sepia(60%) contrast(90%) brightness(105%)';
-    if (activePreset === 'vivid') return 'saturate(150%) contrast(110%)';
-    return `brightness(${editFilters.brightness}%) contrast(${editFilters.contrast}%) saturate(${editFilters.saturation}%) sepia(${editFilters.sepia}%) hue-rotate(${editFilters.hue}deg)`;
-  };
+  const getFilterString = () => filterString(activePreset, editFilters);
 
   const handleDownload = async (url) => {
     setIsDownloading(true);
     try {
-      const id = currentEvent?.eventId || eventData?.eventId;
-      if (id) {
-        await apiFetch(`/api/events/${id}/track-download`, { method: 'POST' }).catch(() => {});
-      }
-
+      if (eventId) await apiFetch(`/api/events/${eventId}/track-download`, { method: 'POST' }).catch(() => {});
       const response = await fetch(url);
       const blob = await response.blob();
-      
-      const hasEdits = isEditing && (activePreset !== 'original' || 
-                        editFilters.brightness !== 100 || 
-                        editFilters.contrast !== 100 || 
-                        editFilters.saturation !== 100 || 
-                        editFilters.sepia !== 0 || 
-                        editFilters.hue !== 0);
+      const hasEdits = isEditing && (activePreset !== 'original'
+        || Object.keys(DEFAULT_FILTERS).some((k) => editFilters[k] !== DEFAULT_FILTERS[k]));
 
       if (hasEdits) {
         const img = new Image();
-        img.crossOrigin = "anonymous";
+        img.crossOrigin = 'anonymous';
         img.onload = () => {
           const canvas = document.createElement('canvas');
           canvas.width = img.naturalWidth;
           canvas.height = img.naturalHeight;
           const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.filter = getFilterString();
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            canvas.toBlob((editedBlob) => {
-              if (editedBlob) {
-                const blobUrl = URL.createObjectURL(editedBlob);
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = `photopic_${id || 'event'}_edited.jpg`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(blobUrl);
-              }
-            }, 'image/jpeg', 0.95);
-          }
+          if (!ctx) return;
+          ctx.filter = getFilterString();
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob((edited) => {
+            if (!edited) return;
+            const blobUrl = URL.createObjectURL(edited);
+            triggerDownload(blobUrl, `photopic_${eventId || 'event'}_edited.jpg`);
+            URL.revokeObjectURL(blobUrl);
+          }, 'image/jpeg', 0.95);
         };
         img.src = url;
       } else {
         const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = `photopic_${id || 'event'}_photo.jpg`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        triggerDownload(blobUrl, `photopic_${eventId || 'event'}_photo.jpg`);
         URL.revokeObjectURL(blobUrl);
       }
     } catch (err) {
-      console.error("Blob download failed, falling back to new tab", err);
+      console.error('Blob download failed, falling back to new tab', err);
       window.open(url, '_blank');
     } finally {
       setIsDownloading(false);
@@ -494,80 +160,88 @@ export function PublicGallery({ eventData, onBack }) {
   };
 
   useEffect(() => {
-    if (stream && videoRef.current) {
-      videoRef.current.srcObject = stream;
-    }
+    if (stream && videoRef.current) videoRef.current.srcObject = stream;
   }, [stream]);
 
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [stream]);
+  useEffect(() => () => { stream?.getTracks().forEach((t) => t.stop()); }, [stream]);
 
   const stopCamera = () => {
     if (stream) {
-      stream.getTracks().forEach(track => track.stop());
+      stream.getTracks().forEach((t) => t.stop());
       setStream(null);
     }
   };
 
-  const startCamera = async () => {
+  // Clears the previous scan before a new selfie (camera or upload).
+  const resetForNewSelfie = () => {
     try {
-      const activeId = currentEvent?.eventId || eventData?.eventId;
-      if (activeId) {
-        localStorage.removeItem(`photopic_matched_photos_${activeId}`);
-        localStorage.removeItem(`photopic_selfie_${activeId}`);
+      if (eventId) {
+        localStorage.removeItem(`photopic_matched_photos_${eventId}`);
+        localStorage.removeItem(`photopic_selfie_${eventId}`);
       }
-    } catch (e) {}
+    } catch {}
     scanAbort.current?.abort();
     setPhoto(null);
     setMatchedPhotos(null);
     setIndexing(null);
     setScanError(null);
+    setQuality(null);
     setCameraError(null);
+  };
+
+  const startCamera = async () => {
+    resetForNewSelfie();
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } 
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
       });
       setStream(mediaStream);
     } catch (err) {
       console.error('Camera error:', err);
-      setCameraError('Camera access was not allowed. Please click "Allow" in your browser camera prompt to take a selfie.');
+      setCameraError("We couldn't open your camera. Allow camera access in your browser and try again.");
     }
   };
 
   const capturePhoto = () => {
-    if (!videoRef.current) return;
-    const videoElement = videoRef.current;
+    const video = videoRef.current;
+    if (!video) return;
     const canvas = document.createElement('canvas');
-    canvas.width = videoElement.videoWidth || 640;
-    canvas.height = videoElement.videoHeight || 480;
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-      const photoDataUrl = canvas.toDataURL('image/jpeg', 0.95);
-      const activeEventId = currentEvent?.eventId || eventData?.eventId || 'evt_sample';
-      setPhoto(photoDataUrl);
-      try {
-        localStorage.setItem('photopic_active_event_id', activeEventId);
-        localStorage.setItem(`photopic_selfie_${activeEventId}`, photoDataUrl);
-      } catch (e) {}
-      stopCamera();
-      findMyPhotos(photoDataUrl);
-    }
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    setPhoto(dataUrl);
+    rememberSelfie(eventId || 'evt_sample', dataUrl);
+    stopCamera();
+    findMyPhotos(dataUrl);
   };
 
+  // Upload path: works without a camera (desktop, the admin's preview iframe).
+  const openUpload = () => fileInputRef.current?.click();
+  const handleUpload = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // picking the same file again still fires onChange
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result !== 'string') return;
+      stopCamera();
+      resetForNewSelfie();
+      setPhoto(reader.result);
+      rememberSelfie(eventId, reader.result);
+      findMyPhotos(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
 
   // `silent` re-runs a scan in the background (after indexing finishes) without
   // replacing the results on screen with the scanning animation.
-  const findMyPhotos = async (photoDataUrl, { silent = false } = {}) => {
+  const findMyPhotos = async (photoDataUrl, { silent = false, final = false } = {}) => {
     scanAbort.current?.abort();
     const controller = new AbortController();
     scanAbort.current = controller;
-    const activeEventId = currentEvent?.eventId || eventData?.eventId;
     if (!silent) {
       setIsScanning(true);
       setScanStage('prepare');
@@ -586,11 +260,12 @@ export function PublicGallery({ eventData, onBack }) {
       const response = await apiFetch('/api/scan-faces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventId: activeEventId, referenceImage }),
+        body: JSON.stringify({ eventId, referenceImage }),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => ({}));
       if (controller.signal.aborted) return;
+      if (data.quality || !silent) setQuality(data.quality || null);
       if (response.status === 422 && data.error === 'no_face') return fail('no_face');
       if (response.status === 404) return fail('not_found');
       if (response.status === 429) return fail('rate_limited');
@@ -599,15 +274,14 @@ export function PublicGallery({ eventData, onBack }) {
       const list = [...new Set((data.matches || []).map(resolveMediaUrl).filter(Boolean))];
       setScanError(null);
       setMatchedPhotos(list);
-      setIndexing(data.indexing || null);
+      // `final`: we've stopped waiting on the index, so don't start polling again.
+      const stillIndexing = final ? null : data.indexing || null;
+      setIndexing(stillIndexing);
       try {
-        localStorage.setItem('photopic_active_event_id', activeEventId);
-        if (data.indexing) {
-          localStorage.removeItem(`photopic_matched_photos_${activeEventId}`);
-        } else {
-          localStorage.setItem(`photopic_matched_photos_${activeEventId}`, JSON.stringify(list));
-        }
-      } catch (e) {}
+        localStorage.setItem('photopic_active_event_id', eventId);
+        if (stillIndexing) localStorage.removeItem(`photopic_matched_photos_${eventId}`);
+        else localStorage.setItem(`photopic_matched_photos_${eventId}`, JSON.stringify(list));
+      } catch {}
     } catch (err) {
       if (controller.signal.aborted) return;
       console.error(err);
@@ -632,46 +306,55 @@ export function PublicGallery({ eventData, onBack }) {
 
   // While the event is still being indexed, follow its progress and re-scan once
   // it finishes, so the guest gets complete results without doing anything.
+  // On serverless hosting nothing indexes in the background, so each poll also
+  // advances the index a step (POST index-step; older servers: GET index-status).
   const indexingActive = Boolean(indexing);
   useEffect(() => {
-    const id = currentEvent?.eventId || eventData?.eventId;
-    if (!indexingActive || !photo || !id) return;
+    if (!indexingActive || !photo || !eventId) return;
     let stopped = false;
+    let lastDone = -1;
+    let stalls = 0;
+    let stepSupported = true;
+    const finish = () => { stopped = true; findMyPhotos(photo, { silent: true, final: true }); };
     const poll = async () => {
       try {
-        const res = await apiFetch(`/api/events/${id}/index-status`);
+        let res = stepSupported ? await apiFetch(`/api/events/${eventId}/index-step`, { method: 'POST' }) : null;
+        if (!res || res.status === 404 || res.status === 405) {
+          stepSupported = false;
+          res = await apiFetch(`/api/events/${eventId}/index-status`);
+        }
+        if (!res.ok) return;
         const status = await res.json();
         if (stopped) return;
-        if (status.state === 'indexing') {
-          setIndexing(status);
-        } else {
-          stopped = true;
-          findMyPhotos(photo, { silent: true });
-        }
-      } catch (e) {}
+        if (status.state === 'ready') return finish();
+        if (status.state === 'indexing') { setIndexing(status); stalls = 0; lastDone = status.done; return; }
+        // pending / partial: still moving? Some photos may never index (unreadable
+        // files), so stop waiting once progress has stalled for a few polls.
+        if (status.done > lastDone) { stalls = 0; lastDone = status.done; setIndexing(status); return; }
+        if (++stalls >= 3) finish();
+      } catch {}
     };
+    poll();
     const timer = setInterval(poll, INDEX_POLL_MS);
     return () => { stopped = true; clearInterval(timer); };
-  }, [indexingActive, photo, currentEvent?.eventId, eventData?.eventId]);
-
+  }, [indexingActive, photo, eventId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resetFilters = () => {
     setActivePreset('original');
-    setEditFilters({
-      brightness: 100,
-      contrast: 100,
-      saturation: 100,
-      sepia: 0,
-      hue: 0
-    });
+    setEditFilters(DEFAULT_FILTERS);
   };
 
-  const openLightbox = (index) => {
-    setLightboxIndex(index);
+  const showPhoto = (i) => {
+    setLightboxOrigin(null);
+    setLightboxIndex(i);
     setIsEditing(false);
     resetFilters();
-    const id = currentEvent?.eventId || eventData?.eventId;
-    if (id) apiFetch(`/api/events/${id}/track-view`, { method: 'POST' }).catch(() => {});
+  };
+
+  const openLightbox = (i, rect) => {
+    showPhoto(i);
+    setLightboxOrigin(rect || null);
+    if (eventId) apiFetch(`/api/events/${eventId}/track-view`, { method: 'POST' }).catch(() => {});
   };
 
   const closeLightbox = () => {
@@ -680,8 +363,7 @@ export function PublicGallery({ eventData, onBack }) {
     resetFilters();
   };
 
-  // Lock page scroll while the lightbox is open; the cleanup also runs if the
-  // gallery unmounts with it open (e.g. the Back button), so scroll never stays locked.
+  // Lock page scroll while the lightbox is open (cleanup also runs on unmount).
   const lightboxOpen = lightboxIndex !== null;
   useEffect(() => {
     if (!lightboxOpen) return;
@@ -689,6 +371,10 @@ export function PublicGallery({ eventData, onBack }) {
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = previous; };
   }, [lightboxOpen]);
+
+  const count = matchedPhotos?.length || 0;
+  const nextPhoto = () => { if (lightboxIndex !== null && count) showPhoto((lightboxIndex + 1) % count); };
+  const prevPhoto = () => { if (lightboxIndex !== null && count) showPhoto((lightboxIndex - 1 + count) % count); };
 
   // Swipe left/right between photos on touch screens
   const touchStartX = useRef(null);
@@ -701,60 +387,27 @@ export function PublicGallery({ eventData, onBack }) {
     if (dx < 0) nextPhoto(); else prevPhoto();
   };
 
-  const nextPhoto = (e) => {
-    e?.stopPropagation();
-    if (lightboxIndex !== null && matchedPhotos && matchedPhotos.length > 0) {
-      setLightboxIndex((lightboxIndex + 1) % matchedPhotos.length);
-      setIsEditing(false);
-      resetFilters();
-    }
-  };
-
-  const prevPhoto = (e) => {
-    e?.stopPropagation();
-    if (lightboxIndex !== null && matchedPhotos && matchedPhotos.length > 0) {
-      setLightboxIndex((lightboxIndex - 1 + matchedPhotos.length) % matchedPhotos.length);
-      setIsEditing(false);
-      resetFilters();
-    }
-  };
-
   useEffect(() => {
-    const handleKeyDown = (e) => {
+    const onKey = (e) => {
       if (lightboxIndex === null) return;
       if (e.key === 'Escape') closeLightbox();
       if (e.key === 'ArrowRight') nextPhoto();
       if (e.key === 'ArrowLeft') prevPhoto();
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [lightboxIndex, matchedPhotos]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxIndex, matchedPhotos]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const activeEvent = currentEvent || eventData;
-
-  // Invalid event — fun & warm card
   if (!activeEvent?.eventId) {
     return (
-      <div className="min-h-screen bg-white dark:bg-zinc-950 font-sans flex items-center justify-center p-6">
-        <motion.div
-          initial={{ opacity: 0, y: 40 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', bounce: 0.3 }}
-          className="bg-gradient-to-br from-purple-50/80 via-white to-orange-50/50 dark:from-zinc-900 dark:via-zinc-900/80 dark:to-zinc-850 border border-purple-100 dark:border-zinc-800/80 max-w-md w-full rounded-[2rem] sm:rounded-[2.5rem] p-6 sm:p-10 text-center shadow-sm"
-        >
-          <div className="w-16 h-16 bg-gradient-to-br from-[#6e2b8b]/10 to-[#da7756]/20 rounded-full flex items-center justify-center mx-auto mb-6 text-3xl select-none">
-            🎈
-          </div>
-          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900 dark:text-zinc-50 mb-3">Looking for a party? ✨</h2>
-          <p className="text-slate-600 dark:text-zinc-400 font-medium text-sm sm:text-base leading-relaxed mb-8">
-            This event link has wrapped up or hasn't opened yet! Please double-check your QR code or reach out to the event host.
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} className="max-w-md text-center">
+          <p className="eyebrow mb-3">Event not found</p>
+          <h2 className="display text-4xl font-medium mb-4">Looking for a party?</h2>
+          <p className="text-ink-2 leading-relaxed mb-8">
+            This event link has ended or hasn't opened yet. Double-check your QR code or ask the event host.
           </p>
-          <button 
-            onClick={onBack} 
-            className="bg-gradient-to-r from-[#6e2b8b] to-[#da7756] hover:opacity-95 text-white font-bold px-8 py-3.5 rounded-full transition-all shadow-lg shadow-purple-950/20 hover:scale-102 cursor-pointer"
-          >
-            Back to Portal
-          </button>
+          <button onClick={onBack} className="btn-ink px-7 py-3">See all events</button>
         </motion.div>
       </div>
     );
@@ -766,588 +419,89 @@ export function PublicGallery({ eventData, onBack }) {
     : (matchedPhotos || scanError) ? 'results'
     : 'hero';
   const eventPhotoCount = activeEvent?.indexStatus?.total || activeEvent?.driveFiles?.length || 0;
-  const errorCopy = scanError ? scanErrorCopy(scanError) : null;
 
   const handleLogoClick = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
+    stopCamera();
     cancelScan();
   };
 
   return (
     <MotionConfig reducedMotion="user">
-    <div className="min-h-screen bg-white dark:bg-zinc-950 font-sans selection:bg-slate-200 text-slate-900 dark:text-zinc-50">
-      
-      {/* Header — matches landing nav style exactly */}
-      <header className="bg-white/80 dark:bg-zinc-900/60 backdrop-blur-xl border-b border-slate-100 dark:border-zinc-800/40 sticky top-0 z-40">
-        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            {onBack && (
-              <button 
-                onClick={onBack}
-                className="px-3.5 py-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-200 transition-colors flex items-center gap-1.5 text-xs font-semibold cursor-pointer border border-slate-200/80 dark:border-zinc-800 shadow-sm"
-                title="Back to My Events"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                <span>Back</span>
-              </button>
-            )}
-            <Logo onClick={handleLogoClick} />
-          </div>
-          <div className="flex items-center gap-3 sm:gap-6 min-w-0">
-            <div className="text-right min-w-0 hidden min-[420px]:block">
-              <div className="text-sm font-semibold text-slate-900 dark:text-zinc-100 truncate max-w-[40vw] sm:max-w-xs">{activeEvent?.eventName || eventData?.eventName || 'Event Gallery'}</div>
-              <div className="text-xs font-medium text-slate-500 dark:text-zinc-400 truncate max-w-[40vw] sm:max-w-xs">by {activeEvent?.orgName || eventData?.orgName || 'Organizer'}</div>
-            </div>
-            <ThemeToggle />
-          </div>
-        </div>
-      </header>
+      <div className="min-h-screen flex flex-col">
+        <Masthead
+          onBack={onBack}
+          onLogo={handleLogoClick}
+          title={activeEvent?.eventName || 'Event Gallery'}
+          subtitle={`by ${activeEvent?.orgName || 'Organizer'}`}
+          right={<OrganizerLink />}
+        />
 
-      <main className="max-w-[1400px] mx-auto px-4 sm:px-6 py-8 sm:py-12">
-        <AnimatePresence mode="wait">
-        {/* Initial state — hero CTA with Scrolling Photo Showcase */}
-        {step === 'hero' && (
-          <motion.div key="hero" {...stepMotion} className="w-full">
+        <input ref={fileInputRef} type="file" accept="image/*" onChange={handleUpload} className="hidden" />
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 sm:gap-12 items-center mt-2 md:mt-16 max-w-6xl mx-auto text-left">
-              {/* Left Column: CTA */}
-              <div className="lg:col-span-6 text-center lg:text-left space-y-6 md:space-y-8">
-                {/* GWC Brand badge */}
-                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-purple-50 dark:bg-purple-950/40 text-[#6e2b8b] dark:text-[#da7756] font-bold text-xs uppercase tracking-wider border border-purple-200/50 dark:border-purple-900/40 select-none">
-                  <Search className="w-3.5 h-3.5 animate-pulse text-[#da7756]" /> GWC FaceSync
-                </div>
-                
-                <h1 className="text-4xl sm:text-5xl md:text-6xl font-medium tracking-tight text-slate-900 dark:text-zinc-50 leading-[1.05]">
-                  Find your photos <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#6e2b8b] to-[#da7756] font-serif italic">in seconds.</span>
-                </h1>
-                <p className="text-slate-500 dark:text-zinc-400 text-base sm:text-lg font-medium leading-relaxed max-w-lg">
-                  Take a quick selfie and let our AI scan the event gallery to find every photo you appear in.
-                </p>
-                
-                {cameraError && (
-                  <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300 text-xs font-semibold flex items-center justify-center lg:justify-start gap-2 max-w-md mx-auto lg:mx-0">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-                    <span>{cameraError}</span>
-                  </div>
-                )}
-
-                <div className="flex flex-col sm:flex-row items-center gap-3.5 mx-auto lg:mx-0 w-full sm:w-auto">
-                  <button 
-                    onClick={startCamera}
-                    className="group relative overflow-hidden bg-gradient-to-r from-[#6e2b8b] to-[#da7756] text-white font-extrabold text-base sm:text-lg px-8 py-4 sm:px-10 sm:py-5 rounded-full hover:opacity-95 shadow-xl shadow-purple-950/25 hover:scale-[1.03] active:scale-95 transition-all duration-300 flex items-center justify-center gap-3 cursor-pointer w-full sm:w-auto"
-                  >
-                    <Camera className="w-5 h-5 group-hover:scale-110 transition-transform duration-300" />
-                    <span>Take Selfie</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Right Column: 3D Mascot Superhero AI Showcase */}
-              <div className="lg:col-span-6 relative h-[300px] sm:h-[500px] w-full flex flex-col items-center justify-center overflow-hidden rounded-[2.5rem] bg-gradient-to-br from-purple-50/80 via-white to-orange-50/60 dark:from-zinc-900 dark:via-zinc-900/90 dark:to-zinc-850 border border-purple-100 dark:border-zinc-800/80 p-6 sm:p-8 shadow-sm">
-                {/* Soft ambient gradient orb */}
-                <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(110,43,139,0.08)_0%,transparent_70%)] pointer-events-none" />
-                <div className="absolute top-0 right-0 w-80 h-80 bg-[#6e2b8b]/15 rounded-full blur-3xl pointer-events-none" />
-                <div className="absolute bottom-0 left-0 w-80 h-80 bg-[#da7756]/15 rounded-full blur-3xl pointer-events-none" />
-
-                {/* Flying Rocket Mascot — Large & Clean */}
-                <div className="relative z-10 flex flex-col items-center justify-center w-full h-full">
-                  <motion.img 
-                    src="/mascot_rocket.png" 
-                    alt="GWC AI Mascot" 
-                    animate={{ y: [0, -14, 0], rotate: [0, 1.5, 0] }}
-                    transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}
-                    className="w-56 sm:w-84 md:w-96 lg:w-[420px] max-h-[260px] sm:max-h-[450px] h-auto object-contain drop-shadow-[0_25px_40px_rgba(110,43,139,0.25)] select-none pointer-events-none"
-                  />
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Camera view */}
-        {step === 'camera' && (
-          <motion.div key="camera" {...stepMotion} className="max-w-md mx-auto">
-            <div className="bg-gradient-to-br from-purple-50/90 via-white to-orange-50/60 dark:from-zinc-900 dark:via-zinc-900/90 dark:to-zinc-850 rounded-[2.5rem] p-4 shadow-xl border border-purple-100 dark:border-zinc-800 relative overflow-hidden">
-              {/* Close / cancel camera button */}
-              <button 
-                onClick={stopCamera}
-                className="absolute top-6 right-6 z-40 p-2 rounded-full bg-black/50 hover:bg-black/70 text-white backdrop-blur-md transition-colors cursor-pointer"
-                title="Close Camera"
-              >
-                <X className="w-5 h-5" />
-              </button>
-
-              <div className="aspect-[3/4] rounded-[2rem] overflow-hidden bg-slate-900 relative shadow-inner">
-                <video 
-                  id="camera-preview"
-                  ref={(node) => {
-                    videoRef.current = node;
-                    if (node && stream) {
-                      node.srcObject = stream;
-                    }
-                  }}
-                  autoPlay 
-                  playsInline
-                  className="w-full h-full object-cover transform -scale-x-100"
-                />
-                
-                {/* Scanner overlay */}
-                <div className="absolute inset-0 pointer-events-none">
-                  {/* Scan line */}
-                  <motion.div 
-                    animate={{ y: ['0%', '100%', '0%'] }}
-                    transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
-                    className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#6e2b8b] via-[#da7756] to-[#6e2b8b] shadow-[0_0_15px_5px_rgba(218,119,86,0.6)] z-30"
-                  />
-                  {/* Scan overlay tint */}
-                  <motion.div 
-                    animate={{ opacity: [0, 0.15, 0] }}
-                    transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
-                    className="absolute inset-0 bg-purple-500 mix-blend-overlay z-20"
-                  />
-                  {/* Face bounding box */}
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="w-44 h-52 relative">
-                      <div className="absolute -top-1 -left-1 w-5 h-5 border-t-3 border-l-3 border-white" />
-                      <div className="absolute -top-1 -right-1 w-5 h-5 border-t-3 border-r-3 border-white" />
-                      <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-3 border-l-3 border-white" />
-                      <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-3 border-r-3 border-white" />
-                    </div>
-                  </div>
-                  {/* Align face label */}
-                  <div className="absolute bottom-20 left-0 right-0 flex justify-center">
-                    <span className="text-white font-bold tracking-widest text-xs uppercase bg-black/40 backdrop-blur-md px-4 py-1.5 rounded-full border border-white/20">ALIGN FACE</span>
-                  </div>
-                </div>
-              </div>
-              
-              {/* Capture button */}
-              <div className="absolute bottom-8 left-0 right-0 flex justify-center">
-                <button 
-                  onClick={capturePhoto}
-                  className="w-18 h-18 bg-white rounded-full border-4 border-[#6e2b8b]/30 shadow-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-transform cursor-pointer"
-                  style={{ width: '72px', height: '72px' }}
-                >
-                  <div className="w-13 h-13 bg-gradient-to-r from-[#6e2b8b] to-[#da7756] rounded-full shadow-inner" style={{ width: '52px', height: '52px' }} />
-                </button>
-              </div>
-            </div>
-            <p className="text-center text-slate-500 dark:text-zinc-400 font-medium mt-6">Position your face clearly in the frame.</p>
-          </motion.div>
-        )}
-
-        {step === 'scanning' && (
-          <ScanView key="scanning" selfie={photo} stage={scanStage} photoCount={eventPhotoCount} onCancel={cancelScan} />
-        )}
-
-        {step === 'preparing' && (
-          <PreparingView key="preparing" selfie={photo} indexing={indexing} onCancel={cancelScan} />
-        )}
-
-        {/* Results / Error State */}
-        {step === 'results' && (
-          <motion.div key="results" {...stepMotion} className="w-full">
-            {/* Header banner when matched */}
-            {!scanError && matchedPhotos && matchedPhotos.length > 0 && (
-              <div className="bg-gradient-to-r from-purple-50 via-white to-orange-50 dark:from-zinc-900 dark:to-zinc-850 text-slate-900 dark:text-zinc-50 border border-purple-100 dark:border-zinc-800 p-4 sm:p-6 rounded-[1.5rem] sm:rounded-[2rem] mb-6 sm:mb-12 flex flex-col md:flex-row items-center justify-between gap-6 shadow-sm">
-                <div className="flex items-center gap-4 text-center md:text-left">
-                  <div className="w-14 h-14 rounded-2xl overflow-hidden border-2 border-[#da7756] shrink-0 shadow-md">
-                    <img src={photo} alt="Your selfie" className="w-full h-full object-cover transform -scale-x-100" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900 dark:text-zinc-50">Here are your photos! 🎉</h3>
-                    <p className="text-slate-500 dark:text-zinc-400 font-medium text-sm">
-                      Found {matchedPhotos?.length} photo{matchedPhotos?.length !== 1 ? 's' : ''} of you
-                    </p>
-                    {indexing && (
-                      <p className="mt-1 text-xs font-semibold text-[#6e2b8b] dark:text-[#da7756] flex items-center gap-1.5 justify-center md:justify-start">
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                        Still processing photos ({indexing.done}/{indexing.total}) — more may appear
-                      </p>
-                    )}
-                  </div>
-                </div>
-                
-                <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:gap-3 w-full md:w-auto shrink-0">
-                  <button 
-                    onClick={handleDownloadAllZip}
-                    disabled={isZipping}
-                    className="bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 hover:bg-slate-50 dark:hover:bg-zinc-750 font-bold text-sm px-5 py-3 rounded-full border border-slate-200/80 dark:border-zinc-700 shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 active:scale-95"
-                  >
-                    {isZipping ? (
-                      <>
-                        <Loader2 className="w-4 h-4 text-[#6e2b8b] animate-spin" />
-                        <span>Zipping {zipProgress ? `(${zipProgress.current}/${zipProgress.total})` : '...'}</span>
-                      </>
-                    ) : (
-                      <>
-                        <FolderArchive className="w-4 h-4 text-[#da7756]" />
-                        <span>ZIP ({matchedPhotos.length})</span>
-                      </>
-                    )}
-                  </button>
-
-                  <button 
-                    onClick={startCamera}
-                    className="bg-gradient-to-r from-[#6e2b8b] to-[#da7756] hover:opacity-95 text-white font-semibold text-sm px-6 py-3 rounded-full transition-all shadow-md shadow-purple-950/20 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-                  >
-                    <RefreshCcw className="w-4 h-4" />
-                    <span>Retake</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Error / No Photo Found State — Fun & Engaging with Sad Mascot */}
-            {scanError && (
-              <motion.div 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-gradient-to-br from-purple-50/80 via-white to-orange-50/50 dark:from-zinc-900 dark:via-zinc-900/80 dark:to-zinc-850 border border-purple-100 dark:border-zinc-800/80 rounded-[2rem] sm:rounded-[2.5rem] p-6 sm:p-10 text-center mb-12 shadow-sm max-w-lg mx-auto"
-              >
-                <div className="w-28 h-28 mx-auto mb-4 flex items-center justify-center">
-                  <motion.img 
-                    src="/mascot_sad.png" 
-                    alt="No photo found" 
-                    animate={{ y: [0, -4, 0] }}
-                    transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-                    className="w-full h-full object-contain drop-shadow-md"
-                  />
-                </div>
-                <h3 className="text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900 dark:text-zinc-50 mb-3">
-                  {errorCopy.title}
-                </h3>
-                <p className="text-slate-600 dark:text-zinc-400 font-medium text-sm sm:text-base leading-relaxed max-w-md mx-auto mb-8">
-                  {errorCopy.body}
-                </p>
-                <button 
-                  onClick={startCamera}
-                  className="bg-gradient-to-r from-[#6e2b8b] to-[#da7756] hover:opacity-95 text-white font-bold px-8 py-3.5 rounded-full shadow-lg shadow-purple-950/20 transition-all hover:scale-102 flex items-center justify-center gap-2 mx-auto cursor-pointer"
-                >
-                  <RefreshCcw className="w-4 h-4" />
-                  Try Another Selfie 🤳
-                </button>
+        <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-8 sm:py-12">
+          <AnimatePresence mode="wait">
+            {step === 'hero' && (
+              <motion.div key="hero">
+                <Hero event={activeEvent} cameraError={cameraError} onTakeSelfie={startCamera} onUpload={openUpload} />
               </motion.div>
             )}
-
-            {/* Empty state — Fun & Friendly with Sad Mascot */}
-            {!scanError && matchedPhotos?.length === 0 && (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }} 
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ type: 'spring', bounce: 0.3 }}
-                className="bg-gradient-to-br from-purple-50/80 via-white to-orange-50/50 dark:from-zinc-900 dark:via-zinc-900/80 dark:to-zinc-850 border border-purple-100 dark:border-zinc-800/80 rounded-[2rem] sm:rounded-[2.5rem] p-6 sm:p-10 text-center max-w-lg mx-auto shadow-sm"
-              >
-                <div className="w-28 h-28 mx-auto mb-4 flex items-center justify-center">
-                  <motion.img 
-                    src="/mascot_sad.png" 
-                    alt="No matches" 
-                    animate={{ y: [0, -4, 0] }}
-                    transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-                    className="w-full h-full object-contain drop-shadow-md"
-                  />
-                </div>
-                <h3 className="text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900 dark:text-zinc-50 mb-3">
-                  No matches found... <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#6e2b8b] to-[#da7756] font-serif italic">yet!</span>
-                </h3>
-                <p className="text-slate-600 dark:text-zinc-400 font-medium leading-relaxed max-w-md mx-auto mb-8 text-sm sm:text-base">
-                  Our AI combed through the event album, but didn't catch your face this time. Try taking a brighter, front-facing selfie, or check back soon as more snaps get uploaded!
-                </p>
-                <button 
-                  onClick={startCamera}
-                  className="bg-gradient-to-r from-[#6e2b8b] to-[#da7756] hover:opacity-95 text-white font-bold px-8 py-3.5 rounded-full shadow-lg shadow-purple-950/20 transition-all hover:scale-102 flex items-center justify-center gap-2 mx-auto cursor-pointer"
-                >
-                  <Camera className="w-4 h-4" />
-                  Take Another Selfie 📸
-                </button>
-              </motion.div>
+            {step === 'camera' && (
+              <CameraView key="camera" stream={stream} videoRef={videoRef} onCapture={capturePhoto} onClose={stopCamera} onUpload={openUpload} />
             )}
-
-            {/* Photo grid — masonry, 2 columns even on phones */}
-            {!scanError && matchedPhotos && matchedPhotos.length > 0 && (
-              <div className="columns-2 lg:columns-3 xl:columns-4 gap-3 sm:gap-6">
-                {matchedPhotos.map((photoUrl, i) => (
-                  <PhotoCard
-                    key={photoUrl}
-                    photoUrl={photoUrl}
-                    index={i}
-                    onOpen={openLightbox}
-                    onDownload={handleDownload}
-                  />
-                ))}
-              </div>
+            {step === 'scanning' && (
+              <ScanView key="scanning" selfie={photo} stage={scanStage} photoCount={eventPhotoCount} onCancel={cancelScan} />
             )}
-          </motion.div>
-        )}
-        </AnimatePresence>
-      </main>
+            {step === 'preparing' && (
+              <PreparingView key="preparing" selfie={photo} indexing={indexing} onCancel={cancelScan} />
+            )}
+            {step === 'results' && (
+              <Results
+                key="results"
+                photo={photo}
+                matchedPhotos={matchedPhotos}
+                scanError={scanError}
+                quality={quality}
+                indexing={indexing}
+                isZipping={isZipping}
+                zipProgress={zipProgress}
+                onZip={handleDownloadAllZip}
+                onRetake={startCamera}
+                onUpload={openUpload}
+                onOpen={openLightbox}
+                onDownload={handleDownload}
+              />
+            )}
+          </AnimatePresence>
+        </main>
 
-      {/* Lightbox */}
-      {createPortal(
-        <AnimatePresence>
-          {lightboxIndex !== null && matchedPhotos && (
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col md:flex-row"
-              onClick={closeLightbox}
-              onTouchStart={handleTouchStart}
-              onTouchEnd={handleTouchEnd}
-            >
-            {/* Header controls */}
-            <div className="absolute top-5 left-5 right-5 flex justify-between items-center z-50 pointer-events-none">
-              <div className="flex items-center gap-2 pointer-events-auto">
-                <span className="px-3 py-2 rounded-full bg-white/10 border border-white/20 text-white/80 text-xs font-semibold tabular-nums">
-                  {lightboxIndex + 1} / {matchedPhotos.length}
-                </span>
-                <button
-                  onClick={(e) => { e.stopPropagation(); setIsEditing(!isEditing); }}
-                  className={`px-4 py-2.5 rounded-full text-xs font-bold transition-all border flex items-center gap-2 ${
-                    isEditing 
-                      ? 'bg-white text-black border-white shadow-lg font-black' 
-                      : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
-                  }`}
-                >
-                  <Sliders className="w-3.5 h-3.5" />
-                  {isEditing ? 'Tuning Colors...' : 'Tune Colors'}
-                </button>
-              </div>
-              
-              <button 
-                className="text-white/60 hover:text-white p-2.5 bg-white/10 hover:bg-white/20 rounded-full transition-all border border-white/20 pointer-events-auto shadow-md"
-                onClick={closeLightbox}
-              >
-                <X className="w-4.5 h-4.5" />
-              </button>
-            </div>
-            
-            {/* Left/Main Content area: Image frame */}
-            <div className="flex-1 min-h-0 flex items-center justify-center relative px-2 pt-20 pb-24 sm:p-8 select-none cursor-zoom-out" onClick={closeLightbox}>
-              <button 
-                onClick={prevPhoto} 
-                className="absolute left-4 sm:left-6 hidden sm:block text-white/50 hover:text-white p-3 hover:bg-white/10 rounded-full transition-all z-40 border border-transparent hover:border-white/20 shadow-md cursor-pointer"
-              >
-                <ChevronLeft className="w-6 h-6 sm:w-7 sm:h-7" />
-              </button>
+        <footer className="border-t border-line mt-10">
+          <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 flex items-center justify-between gap-4 text-xs text-ink-3">
+            <span>PhotoPic by GWC DATA.AI</span>
+            <OrganizerLink />
+          </div>
+        </footer>
 
-              <div 
-                className="relative w-full h-full max-h-full sm:max-h-[75vh] max-w-full sm:max-w-[85vw] flex items-center justify-center rounded-2xl cursor-default"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <motion.img 
-                  key={lightboxIndex}
-                  initial={{ opacity: 0, scale: 0.97 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                  src={matchedPhotos[lightboxIndex]} 
-                  alt="Fullscreen view" 
-                  style={{ filter: getFilterString() }}
-                  className="max-h-full max-w-full object-contain rounded-xl sm:rounded-2xl shadow-2xl transition-[filter] duration-150"
-                  onError={(e) => {
-                    const target = e.currentTarget;
-                    if (target.src.includes('/api/drive-proxy/')) {
-                      const fileId = target.src.split('/api/drive-proxy/')[1];
-                      if (fileId && !target.src.includes('googleusercontent.com')) {
-                        target.src = `https://lh3.googleusercontent.com/d/${fileId}=w1600`;
-                      }
-                    }
-                  }}
-                />
-              </div>
-
-              <button 
-                onClick={nextPhoto} 
-                className="absolute right-4 sm:right-6 hidden sm:block text-white/50 hover:text-white p-3 hover:bg-white/10 rounded-full transition-all z-40 border border-transparent hover:border-white/20 shadow-md cursor-pointer"
-              >
-                <ChevronRight className="w-6 h-6 sm:w-7 sm:h-7" />
-              </button>
-              
-              {/* Bottom controls panel when NOT editing */}
-              {!isEditing && (
-                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 cursor-default" onClick={(e) => e.stopPropagation()}>
-                  <button 
-                    disabled={isDownloading}
-                    className="bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-900 font-bold px-6 py-3 rounded-full flex items-center gap-2 hover:scale-105 hover:shadow-xl transition-all shadow-lg text-sm cursor-pointer"
-                    onClick={(e) => { e.stopPropagation(); handleDownload(matchedPhotos[lightboxIndex]); }}
-                  >
-                    <Download className="w-4 h-4" /> {isDownloading ? 'Saving...' : 'Save High-Res'}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Right sidebar area: Editor panel */}
-            <AnimatePresence>
-              {isEditing && (
-                <motion.div
-                  initial={{ opacity: 0, x: 80 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 80 }}
-                  transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                  className="w-full md:w-80 bg-zinc-950/80 backdrop-blur-xl border-t md:border-t-0 md:border-l border-zinc-800/60 p-6 flex flex-col justify-between shrink-0 overflow-y-auto max-h-[45vh] md:max-h-screen z-20"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="space-y-6 pt-10 md:pt-14">
-                    <div>
-                      <h4 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Color Tuning</h4>
-                      <p className="text-[11px] text-zinc-550 mt-1">Adjust presets or custom parameters to correct color balances.</p>
-                    </div>
-
-                    {/* Presets List */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 block">Presets</label>
-                      <div className="grid grid-cols-3 gap-1.5">
-                        {[
-                          { id: 'original', label: 'Original' },
-                          { id: 'warm', label: 'Warm Glow' },
-                          { id: 'cool', label: 'Cool Breeze' },
-                          { id: 'noir', label: 'Noir' },
-                          { id: 'vintage', label: 'Vintage' },
-                          { id: 'vivid', label: 'Vivid' }
-                        ].map((preset) => {
-                          const isActive = activePreset === preset.id;
-                          return (
-                            <button
-                              key={preset.id}
-                              onClick={() => {
-                                setActivePreset(preset.id);
-                                if (preset.id !== 'original') {
-                                  setEditFilters({ brightness: 100, contrast: 100, saturation: 100, sepia: 0, hue: 0 });
-                                }
-                              }}
-                              className={`py-2 px-1 rounded-xl text-[10px] font-semibold transition-all text-center border ${
-                                isActive 
-                                  ? 'bg-white border-white text-black shadow-sm font-bold' 
-                                  : 'bg-white/5 border-white/10 text-zinc-400 hover:border-white/20'
-                              }`}
-                            >
-                              {preset.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Custom Adjustments */}
-                    {activePreset === 'original' && (
-                      <div className="space-y-4">
-                        <div className="flex justify-between items-center pb-2 border-b border-zinc-900">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 block">Custom Tuning</label>
-                          <button
-                            onClick={() => setEditFilters({ brightness: 100, contrast: 100, saturation: 100, sepia: 0, hue: 0 })}
-                            className="text-[10px] font-bold text-white hover:text-zinc-200 flex items-center gap-1 transition-colors"
-                          >
-                            <Undo className="w-3 h-3" /> Reset
-                          </button>
-                        </div>
-
-                        {/* Brightness */}
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-[11px] font-semibold text-zinc-400">
-                            <span>Brightness</span>
-                            <span>{editFilters.brightness}%</span>
-                          </div>
-                          <input 
-                            type="range" 
-                            min="50" 
-                            max="150" 
-                            value={editFilters.brightness} 
-                            onChange={(e) => setEditFilters({ ...editFilters, brightness: parseInt(e.target.value) })}
-                            className="w-full accent-white bg-white/10 rounded-lg appearance-none h-1"
-                          />
-                        </div>
-
-                        {/* Contrast */}
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-[11px] font-semibold text-zinc-400">
-                            <span>Contrast</span>
-                            <span>{editFilters.contrast}%</span>
-                          </div>
-                          <input 
-                            type="range" 
-                            min="50" 
-                            max="150" 
-                            value={editFilters.contrast} 
-                            onChange={(e) => setEditFilters({ ...editFilters, contrast: parseInt(e.target.value) })}
-                            className="w-full accent-white bg-white/10 rounded-lg appearance-none h-1"
-                          />
-                        </div>
-
-                        {/* Saturation */}
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-[11px] font-semibold text-zinc-400">
-                            <span>Saturation</span>
-                            <span>{editFilters.saturation}%</span>
-                          </div>
-                          <input 
-                            type="range" 
-                            min="0" 
-                            max="200" 
-                            value={editFilters.saturation} 
-                            onChange={(e) => setEditFilters({ ...editFilters, saturation: parseInt(e.target.value) })}
-                            className="w-full accent-white bg-white/10 rounded-lg appearance-none h-1"
-                          />
-                        </div>
-
-                        {/* Sepia */}
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-[11px] font-semibold text-zinc-400">
-                            <span>Sepia</span>
-                            <span>{editFilters.sepia}%</span>
-                          </div>
-                          <input 
-                            type="range" 
-                            min="0" 
-                            max="100" 
-                            value={editFilters.sepia} 
-                            onChange={(e) => setEditFilters({ ...editFilters, sepia: parseInt(e.target.value) })}
-                            className="w-full accent-white bg-white/10 rounded-lg appearance-none h-1"
-                          />
-                        </div>
-
-                        {/* Hue Rotate */}
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between text-[11px] font-semibold text-zinc-400">
-                            <span>Hue Rotate</span>
-                            <span>{editFilters.hue}°</span>
-                          </div>
-                          <input 
-                            type="range" 
-                            min="0" 
-                            max="360" 
-                            value={editFilters.hue} 
-                            onChange={(e) => setEditFilters({ ...editFilters, hue: parseInt(e.target.value) })}
-                            className="w-full accent-white bg-white/10 rounded-lg appearance-none h-1"
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="pt-6 border-t border-zinc-900 mt-4">
-                    <button
-                      onClick={() => handleDownload(matchedPhotos[lightboxIndex])}
-                      disabled={isDownloading}
-                      className="w-full bg-white hover:bg-slate-100 disabled:opacity-50 text-slate-950 font-bold py-3 rounded-full flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all text-xs"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      {isDownloading ? 'Downloading...' : 'Download Edited Photo'}
-                    </button>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-            </motion.div>
-          )}
-        </AnimatePresence>,
-        document.body
-      )}
-    </div>
+        <Lightbox
+          photos={matchedPhotos}
+          index={lightboxIndex}
+          origin={lightboxOrigin}
+          onClose={closeLightbox}
+          onNext={nextPhoto}
+          onPrev={prevPhoto}
+          onJump={showPhoto}
+          isEditing={isEditing}
+          setIsEditing={setIsEditing}
+          activePreset={activePreset}
+          setActivePreset={setActivePreset}
+          editFilters={editFilters}
+          setEditFilters={setEditFilters}
+          filter={getFilterString()}
+          isDownloading={isDownloading}
+          onDownload={handleDownload}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        />
+      </div>
     </MotionConfig>
   );
 }
