@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { MotionConfig, AnimatePresence, motion } from 'motion/react';
 import { PublicGallery } from './views/PublicGallery';
 import { MyEvents } from './views/MyEvents';
-import { Masthead, OrganizerLink } from './components/Masthead';
+import { Masthead } from './components/Masthead';
 import { Mascot } from './components/Mascot';
 
 const PAGE = {
@@ -71,7 +71,7 @@ export default function App() {
           </motion.div>
         ) : (
           <motion.div key="catalog" {...PAGE} className="min-h-screen flex flex-col">
-            <Masthead onLogo={backToEvents} right={<OrganizerLink />} />
+            <Masthead onLogo={backToEvents} />
 
             <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6">
               {/* issue masthead */}
@@ -107,7 +107,6 @@ export default function App() {
             <footer className="border-t border-line mt-20">
               <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ink-3">
                 <span>PhotoPic by GWC DATA.AI · Solution matters</span>
-                <OrganizerLink />
               </div>
             </footer>
           </motion.div>

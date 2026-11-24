@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, MotionConfig } from 'motion/react';
 import { apiFetch, resolveMediaUrl } from '../lib/api';
 import { downloadPhotosAsZip } from '../lib/zipHelper';
-import { Masthead, OrganizerLink } from '../components/Masthead';
+import { Masthead } from '../components/Masthead';
 import { Hero } from './gallery/Hero';
 import { CameraView } from './gallery/CameraView';
 import { ScanView, PreparingView } from './gallery/ScanView';
@@ -414,7 +414,7 @@ export function PublicGallery({ eventData, onBack }) {
           onLogo={handleLogoClick}
           title={activeEvent?.eventName || 'Event Gallery'}
           subtitle={`by ${activeEvent?.orgName || 'Organizer'}`}
-          right={<OrganizerLink />}
+         
         />
 
         <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-8 sm:py-12">
@@ -455,7 +455,6 @@ export function PublicGallery({ eventData, onBack }) {
         <footer className="border-t border-line mt-10">
           <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 flex items-center justify-between gap-4 text-xs text-ink-3">
             <span>PhotoPic by GWC DATA.AI</span>
-            <OrganizerLink />
           </div>
         </footer>
 

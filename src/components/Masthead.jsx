@@ -1,15 +1,4 @@
-import { ChevronLeft, LockKeyhole } from 'lucide-react';
-
-export const ADMIN_URL = (import.meta.env.VITE_ADMIN_URL || 'http://localhost:5174').replace(/\/+$/, '');
-
-export function OrganizerLink({ className = '' }) {
-  return (
-    <a href={ADMIN_URL} className={`inline-flex items-center gap-1.5 text-xs font-bold text-ink-2 hover:text-plum transition-colors ${className}`}>
-      <LockKeyhole className="w-3.5 h-3.5" />
-      <span className="ink-underline">Organizer login</span>
-    </a>
-  );
-}
+import { ChevronLeft } from 'lucide-react';
 
 // Sticky magazine-style header. `title`/`subtitle` show the current event in serif.
 export function Masthead({ onBack, onLogo, title, subtitle, right }) {
