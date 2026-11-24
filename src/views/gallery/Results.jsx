@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence, animate } from 'motion/react';
-import { Camera, Download, FolderArchive, ImageUp, Loader2, RefreshCcw, Rows3, LayoutGrid, Grid3x3, Maximize2, X, Lightbulb } from 'lucide-react';
+import { Camera, Download, FolderArchive, Loader2, RefreshCcw, Rows3, LayoutGrid, Grid3x3, Maximize2, X, Lightbulb } from 'lucide-react';
 import { stepMotion, thumbFor, scanErrorCopy, coachTips } from './utils';
 import { Mascot, Confetti } from '../../components/Mascot';
 
@@ -81,7 +81,7 @@ function CountUp({ value }) {
 }
 
 // No matches, no face, or a server problem: the sad kid explains and coaches.
-function CoachPanel({ photo, scanError, quality, onRetake, onUpload }) {
+function CoachPanel({ photo, scanError, quality, onRetake }) {
   const issues = quality?.issues || [];
   const serverProblem = scanError && scanError !== 'no_face';
   const copy = scanError
@@ -136,7 +136,6 @@ function CoachPanel({ photo, scanError, quality, onRetake, onUpload }) {
 
           <div className="flex flex-col sm:flex-row gap-3 justify-center md:justify-start">
             <button onClick={onRetake} className="btn-plum sheen px-7 py-3.5"><Camera className="w-4 h-4" /> Take another selfie</button>
-            <button onClick={onUpload} className="btn-ghost px-6 py-3.5"><ImageUp className="w-4 h-4" /> Upload a photo</button>
           </div>
         </div>
       </div>
@@ -182,12 +181,12 @@ function QualityTip({ quality, onRetake }) {
   );
 }
 
-export function Results({ photo, matchedPhotos, scanError, quality, indexing, isZipping, zipProgress, onZip, onRetake, onUpload, onOpen, onDownload }) {
+export function Results({ photo, matchedPhotos, scanError, quality, indexing, isZipping, zipProgress, onZip, onRetake, onOpen, onDownload }) {
   const [density, setDensity] = useState(() => (window.innerWidth >= 1024 ? 4 : 2));
   const cols = DENSITIES.find((d) => d.id === density)?.cls;
 
   if (scanError || matchedPhotos?.length === 0) {
-    return <CoachPanel photo={photo} scanError={scanError} quality={quality} onRetake={onRetake} onUpload={onUpload} />;
+    return <CoachPanel photo={photo} scanError={scanError} quality={quality} onRetake={onRetake} />;
   }
 
   const n = matchedPhotos.length;

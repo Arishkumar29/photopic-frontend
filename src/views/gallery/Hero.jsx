@@ -1,13 +1,13 @@
 import { useMemo } from 'react';
 import { motion, useMotionValue, useSpring, useTransform } from 'motion/react';
-import { Camera, ImageUp, ScanFace } from 'lucide-react';
+import { Camera, ScanFace } from 'lucide-react';
 import { eventThumb } from './utils';
 import { Mascot } from '../../components/Mascot';
 
 const RISE = { hidden: { opacity: 0, y: 18 }, show: { opacity: 1, y: 0, transition: { type: 'spring', stiffness: 140, damping: 18 } } };
 
 const STEPS = [
-  { n: '01', title: 'Snap a selfie', body: 'Face the camera in good light. Or upload a photo you like.' },
+  { n: '01', title: 'Snap a selfie', body: 'Face the camera in good light, nothing covering your face.' },
   { n: '02', title: 'We look for you', body: 'Your face is compared with every photo from the event.' },
   { n: '03', title: 'Keep your photos', body: 'Save them one by one or all at once as a ZIP.' },
 ];
@@ -96,7 +96,7 @@ function ContactSheet({ event }) {
   );
 }
 
-export function Hero({ event, cameraError, onTakeSelfie, onUpload }) {
+export function Hero({ event, cameraError, onTakeSelfie }) {
   return (
     <div className="max-w-6xl mx-auto">
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-16 items-center pt-4 sm:pt-10">
@@ -118,16 +118,13 @@ export function Hero({ event, cameraError, onTakeSelfie, onUpload }) {
           {cameraError && (
             <div role="alert" className="p-4 rounded-xl bg-amber-soft border border-amber/30 text-sm text-[#6b4710] max-w-md">
               <p className="font-semibold">{cameraError}</p>
-              <p className="mt-1">No camera? <button onClick={onUpload} className="underline font-semibold">Upload a photo instead</button>.</p>
+              <p className="mt-1">Tap the camera icon in your browser's address bar, allow access, then try again.</p>
             </div>
           )}
 
           <motion.div variants={RISE} className="flex flex-col sm:flex-row gap-3 sm:items-center">
             <button onClick={onTakeSelfie} className="btn-plum sheen text-base px-8 py-4 group">
               <Camera className="w-5 h-5 transition-transform group-hover:-rotate-12" /> Take a selfie
-            </button>
-            <button onClick={onUpload} className="btn-ghost text-base px-6 py-4">
-              <ImageUp className="w-5 h-5" /> Upload a photo
             </button>
           </motion.div>
           <p className="text-xs text-ink-3">Your selfie is only used to find your photos.</p>

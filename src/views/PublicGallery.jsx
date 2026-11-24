@@ -49,7 +49,6 @@ export function PublicGallery({ eventData, onBack }) {
   // Where the tapped card sits on screen, so the lightbox can zoom out of it.
   const [lightboxOrigin, setLightboxOrigin] = useState(null);
   const videoRef = useRef(null);
-  const fileInputRef = useRef(null);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editFilters, setEditFilters] = useState(DEFAULT_FILTERS);
@@ -172,7 +171,7 @@ export function PublicGallery({ eventData, onBack }) {
     }
   };
 
-  // Clears the previous scan before a new selfie (camera or upload).
+  // Clears the previous scan before a new selfie.
   const resetForNewSelfie = () => {
     try {
       if (eventId) {
@@ -216,24 +215,6 @@ export function PublicGallery({ eventData, onBack }) {
     rememberSelfie(eventId || 'evt_sample', dataUrl);
     stopCamera();
     findMyPhotos(dataUrl);
-  };
-
-  // Upload path: works without a camera (desktop, the admin's preview iframe).
-  const openUpload = () => fileInputRef.current?.click();
-  const handleUpload = (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // picking the same file again still fires onChange
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result !== 'string') return;
-      stopCamera();
-      resetForNewSelfie();
-      setPhoto(reader.result);
-      rememberSelfie(eventId, reader.result);
-      findMyPhotos(reader.result);
-    };
-    reader.readAsDataURL(file);
   };
 
   // `silent` re-runs a scan in the background (after indexing finishes) without
@@ -436,17 +417,15 @@ export function PublicGallery({ eventData, onBack }) {
           right={<OrganizerLink />}
         />
 
-        <input ref={fileInputRef} type="file" accept="image/*" onChange={handleUpload} className="hidden" />
-
         <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-8 sm:py-12">
           <AnimatePresence mode="wait">
             {step === 'hero' && (
               <motion.div key="hero">
-                <Hero event={activeEvent} cameraError={cameraError} onTakeSelfie={startCamera} onUpload={openUpload} />
+                <Hero event={activeEvent} cameraError={cameraError} onTakeSelfie={startCamera} />
               </motion.div>
             )}
             {step === 'camera' && (
-              <CameraView key="camera" stream={stream} videoRef={videoRef} onCapture={capturePhoto} onClose={stopCamera} onUpload={openUpload} />
+              <CameraView key="camera" stream={stream} videoRef={videoRef} onCapture={capturePhoto} onClose={stopCamera} />
             )}
             {step === 'scanning' && (
               <ScanView key="scanning" selfie={photo} stage={scanStage} photoCount={eventPhotoCount} onCancel={cancelScan} />
@@ -466,7 +445,6 @@ export function PublicGallery({ eventData, onBack }) {
                 zipProgress={zipProgress}
                 onZip={handleDownloadAllZip}
                 onRetake={startCamera}
-                onUpload={openUpload}
                 onOpen={openLightbox}
                 onDownload={handleDownload}
               />

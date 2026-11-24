@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Timer, ImageUp, Sun, SunDim, Check } from 'lucide-react';
+import { X, Timer, Sun, SunDim, Check } from 'lucide-react';
 import { stepMotion } from './utils';
 
 // Cheap live lighting check: every 500 ms, average the luminance of the centre of
@@ -33,7 +33,7 @@ const HINTS = {
   good: { icon: Check, text: 'Lighting looks good', cls: 'bg-sage text-white' },
 };
 
-export function CameraView({ stream, videoRef, onCapture, onClose, onUpload }) {
+export function CameraView({ stream, videoRef, onCapture, onClose }) {
   const hint = useLightHint(videoRef);
   const Hint = hint ? HINTS[hint] : null;
   const [useTimer, setUseTimer] = useState(false);
@@ -138,9 +138,8 @@ export function CameraView({ stream, videoRef, onCapture, onClose, onUpload }) {
           >
             <span className="w-[54px] h-[54px] rounded-full bg-paper" />
           </button>
-          <button onClick={onUpload} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-full text-paper/70 hover:text-paper">
-            <ImageUp className="w-4 h-4" /> Upload
-          </button>
+          {/* keeps the shutter centred opposite the timer */}
+          <span aria-hidden className="w-[60px]" />
         </div>
       </div>
       <p className="text-center text-sm text-ink-3 mt-5">Look straight at the camera. No sunglasses or masks.</p>
