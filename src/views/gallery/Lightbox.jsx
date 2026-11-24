@@ -74,10 +74,12 @@ export function Lightbox({
               </span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setIsEditing(!isEditing)}
-                  className={`flex items-center gap-2 text-xs font-bold px-4 py-2 rounded-full border transition-colors ${isEditing ? 'bg-paper text-ink border-paper' : 'border-paper/20 text-paper/80 hover:border-paper/50'}`}
+                  disabled={isDownloading}
+                  onClick={() => onDownload(photos[index])}
+                  className="flex items-center gap-2 text-xs font-bold px-4 py-2 rounded-full bg-paper text-ink hover:bg-white transition-colors disabled:opacity-60"
                 >
-                  <Sliders className="w-3.5 h-3.5" /> {isEditing ? 'Editing' : 'Edit colors'}
+                  <Download className="w-3.5 h-3.5" />
+                  {isDownloading ? 'Saving…' : isEditing ? 'Save edited' : 'Save'}
                 </button>
                 <button onClick={onClose} aria-label="Close" className="p-2 rounded-full text-paper/70 hover:text-paper hover:bg-paper/10">
                   <X className="w-5 h-5" />
@@ -115,19 +117,16 @@ export function Lightbox({
               </button>
             </div>
 
-            {/* bottom: save + film strip */}
+            {/* bottom: edit colors + film strip */}
             <div className="shrink-0 pt-3 pb-2 space-y-1">
-              {!isEditing && (
-                <div className="flex justify-center">
-                  <button
-                    disabled={isDownloading}
-                    onClick={() => onDownload(photos[index])}
-                    className="btn bg-paper text-ink hover:bg-white px-6 py-3"
-                  >
-                    <Download className="w-4 h-4" /> {isDownloading ? 'Saving…' : 'Save full size'}
-                  </button>
-                </div>
-              )}
+              <div className="flex justify-center">
+                <button
+                  onClick={() => setIsEditing(!isEditing)}
+                  className={`flex items-center gap-2 text-sm font-bold px-6 py-3 rounded-full border transition-colors ${isEditing ? 'bg-paper text-ink border-paper' : 'border-paper/25 text-paper/85 hover:border-paper/60'}`}
+                >
+                  <Sliders className="w-4 h-4" /> {isEditing ? 'Done editing' : 'Edit colors'}
+                </button>
+              </div>
               <FilmStrip photos={photos} index={index} onJump={onJump} />
             </div>
           </div>
@@ -187,14 +186,6 @@ export function Lightbox({
                     ))}
                   </div>
                 )}
-
-                <button
-                  onClick={() => onDownload(photos[index])}
-                  disabled={isDownloading}
-                  className="btn bg-coral text-white hover:bg-[#c8643f] w-full py-3 mt-auto"
-                >
-                  <Download className="w-4 h-4" /> {isDownloading ? 'Saving…' : 'Save edited photo'}
-                </button>
               </motion.aside>
             )}
           </AnimatePresence>
